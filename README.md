@@ -16,7 +16,7 @@ cd PersonalBPNet
 pip install -e . # for editable mode.
 ```
 
-Then the `PersonalBPNet` and `CLIPNET` classes can be accessed via `import`:
+Then the `PersonalBPNet` and `CLIPNET` classes can be directly imported:
 
 ```
 from personal_bpnet import PersonalBPNet, CLIPNET
