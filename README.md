@@ -22,4 +22,4 @@ Then the `PersonalBPNet` and `CLIPNET` classes can be directly imported:
 from personal_bpnet import PersonalBPNet, CLIPNET
 ```
 
-This package is currently in active dev and may change drastically. Models have not been extensively benchmarked yet. May be lots of typos/copy past errors. A personalized ChromBPNet fitting method has not been included, as I personally have not had success training such models.
+This package is currently in active dev and may change drastically. Models have not been extensively benchmarked yet. May be lots of typos/copy paste errors. A personalized ChromBPNet fitting method has not been included, as I personally have not had success training such models.
