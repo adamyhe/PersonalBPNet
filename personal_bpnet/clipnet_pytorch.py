@@ -142,14 +142,14 @@ class CLIPNET(torch.nn.Module):
         verbose=True,
     ):
         # We need to define all the layers in the __init__ method
-        super(PersonalBPNet, self).__init__()
+        super(CLIPNET, self).__init__()
         self.n_filters = n_filters
         self.n_layers = n_layers
         self.n_outputs = n_outputs
         self.n_control_tracks = n_control_tracks
 
         self.alpha = alpha
-        self.name = name or "bpnet.{}.{}".format(n_filters, n_layers)
+        self.name = name or "clipnet.{}.{}".format(n_filters, n_layers)
         self.trimming = trimming or 2**n_layers
 
         self.iconv = torch.nn.Conv1d(4, n_filters, kernel_size=21, padding=10)
