@@ -14,12 +14,182 @@ import time
 
 import numpy as np
 import torch
+from bpnetlite.bpnet import CountWrapper
 from bpnetlite.logging import Logger
 from bpnetlite.losses import MNLLLoss, log1pMSELoss
-from bpnetlite.performance import calculate_performance_measures, pearson_corr
+from bpnetlite.performance import (
+    calculate_performance_measures,
+    mean_squared_error,
+    pearson_corr,
+)
 from tangermeme.predict import predict
 
 torch.backends.cudnn.benchmark = True
+
+
+class PauseNet(torch.nn.Module):
+    """ """
+
+    def __init__(
+        self,
+        base_model,
+        n_filters=512,
+        base_trainable=True,
+        output_bias=True,
+        name=None,
+        verbose=True,
+    ):
+        super(PauseNet, self).__init__()
+        self.name = name or "pausenet"
+
+        # set new model to base model and freeze params if not base_trainable
+        self.transfer_model = base_model
+        self.transfer_model = CountWrapper(self.transfer_model)
+        if not self.base_trainable:
+            for param in self.transfer_model.parameters():
+                param.requires_grad = False
+
+        # add new layers
+        self.linear = torch.nn.Linear(n_filters, 1, bias=output_bias)
+        self.cbn = torch.nn.BatchNorm1d(1)
+
+        self.transfer_model.linear = self.linear
+        self.transfer_model.cbn = self.linear.cbn
+
+        # create logger
+        self.logger = Logger(
+            [
+                "Epoch",
+                "Iteration",
+                "Training Time",
+                "Validation Time",
+                "Training MSE",
+                "Validation Pearson",
+                "Validation MSE",
+                "Saved?",
+            ],
+            verbose=verbose,
+        )
+
+    def forward(self, X, X_ctl=None):
+        return self.transfer_model(X, X_ctl=X_ctl)
+
+    def fit(
+        self,
+        training_data,
+        optimizer,
+        valid_data=None,
+        max_epochs=100,
+        batch_size=64,
+        validation_iter=100,
+        early_stopping=None,
+        verbose=True,
+    ):
+        iteration = 0
+        early_stop_count = 0
+        best_loss = float("inf")
+        self.logger.start()
+
+        for epoch in range(max_epochs):
+            tic = time.time()
+
+            for data in training_data:
+                if len(data) == 3:
+                    X, X_ctl, y = data
+                    X, X_ctl, y = X.cuda(), X_ctl.cuda(), y.cuda()
+                else:
+                    X, y = data
+                    X, y = X.cuda(), y.cuda()
+                    X_ctl = None
+
+                # Clear the optimizer and set the model to training mode
+                optimizer.zero_grad()
+                self.train()
+
+                # Run forward pass
+                y_pred = self(X, X_ctl)
+
+                # Calculate loss
+                loss = log1pMSELoss(y_pred, y).mean()
+
+                # Extract the loss for logging
+                loss_ = loss.item()
+
+                # Update the model
+                loss.backward()
+                optimizer.step()
+
+                # Report measures if desired
+                if verbose and iteration % validation_iter == 0:
+                    train_time = time.time() - tic
+
+                    with torch.no_grad():
+                        self.eval()
+
+                        tic = time.time()
+
+                        # Initialize lists to store validation statistics
+                        valid_mse = []
+                        pred_val = []
+                        obs_val = []
+
+                        # Loop over the validation data
+                        for X_val, y_val in valid_data:
+                            y_pred = predict(
+                                self, X_val, batch_size=batch_size, device="cuda"
+                            )
+                            obs_val.append(y_val)
+                            pred_val.append(y_pred)
+                            valid_mse.append(mean_squared_error(y_val, y_pred))
+
+                        val_corr = pearson_corr(
+                            torch.cat(pred_val).squeeze(),
+                            torch.log(torch.cat(obs_val).squeeze() + 1),
+                        )
+                        valid_loss = torch.cat(valid_mse).mean()
+
+                        valid_time = time.time() - tic
+
+                        self.logger.add(
+                            [
+                                epoch,
+                                iteration,
+                                train_time,
+                                valid_time,
+                                loss_,
+                                np.nan_to_num(val_corr).item(),
+                                valid_loss.item(),
+                                (valid_loss < best_loss).item(),
+                            ]
+                        )
+
+                        self.logger.save(f"{self.name}.log")
+
+                        # Save the model if it is the best so far
+                        if valid_loss < best_loss:
+                            torch.save(self.state_dict(), f"{self.name}.torch")
+                            torch.save(
+                                {
+                                    "early_stop_count": early_stop_count,
+                                    "epoch": epoch,
+                                    "optimizer_state_dict": optimizer.state_dict(),
+                                },
+                                f"{self.name}.checkpoint.torch",
+                            )
+                            best_loss = valid_loss
+                            early_stop_count = 0
+                        else:
+                            early_stop_count += 1
+
+                if early_stopping is not None and early_stop_count >= early_stopping:
+                    break
+
+                iteration += 1
+
+            if early_stopping is not None and early_stop_count >= early_stopping:
+                break
+
+        torch.save(self, f"{self.name}.final.torch")
 
 
 class CLIPNET(torch.nn.Module):
