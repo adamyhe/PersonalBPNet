@@ -41,6 +41,7 @@ class PauseNet(torch.nn.Module):
     ):
         super(PauseNet, self).__init__()
         self.name = name or "pausenet"
+        self.base_trainable = base_trainable
 
         # set new model to base model and freeze params if not base_trainable
         self.transfer_model = base_model
