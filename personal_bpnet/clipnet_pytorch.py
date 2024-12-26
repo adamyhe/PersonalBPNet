@@ -56,6 +56,11 @@ class PauseNet(torch.nn.Module):
         self.transfer_model.linear = self.linear
         self.transfer_model.cbn = self.cbn
 
+        for param in self.transfer_model.linear.parameters():
+            param.requires_grad = True
+        for param in self.transfer_model.cbn.parameters():
+            param.require_grad = True
+
         # create logger
         self.logger = Logger(
             [
