@@ -3,13 +3,13 @@ __init__.py
 Author: Adam He <adamyhe@gmail.com>
 """
 
-from .clipnet_pytorch import CLIPNET
+from .clipnet_pytorch import CLIPNET, PauseNet
 from .personal_bpnet import PersonalBPNet
 from .utils import (
-    BedGenerator,
     ChunkedDataLoader,
     ChunkedDataset,
     ChunkSampler,
+    ScalarLoader,
     reverse_complement_twohot,
     twohot_encode,
 )

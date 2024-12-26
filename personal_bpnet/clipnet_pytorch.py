@@ -33,8 +33,8 @@ class PauseNet(torch.nn.Module):
     def __init__(
         self,
         base_model,
-        n_filters=512,
         base_trainable=True,
+        n_filters=512,
         output_bias=True,
         name=None,
         verbose=True,

@@ -186,17 +186,18 @@ class ChunkedDataLoader(DataLoader):
         )
 
 
-class BedGenerator(torch.utils.data.Dataset):
-    """A data generator for BPNet inputs.
+class ScalarLoader(torch.utils.data.Dataset):
+    """A data generator for sequence networks w/ single scalar outputs.
 
-    This generator takes in an extracted set of sequences, output signals,
-    and control signals, and will return a single element with random
-    jitter and reverse-complement augmentation applied. Jitter is implemented
-    efficiently by taking in data that is wider than the in/out windows by
-    two times the maximum jitter and windows are extracted from that.
+    This generator takes in an extracted set of sequences and output signal
+    (single scalar/sequence) and will return a single element with random
+    jitter and reverse-complement augmentation applied. Note that unlike with
+    BPNet's data generator, the output is not jittered/rev comped. Jitter is
+    implemented efficiently by taking in data that is wider than the in windows
+    by two times the maximum jitter and windows are extracted from that.
     Essentially, if an input window is 1000 and the maximum jitter is 128, one
     would pass in data with a length of 1256 and a length 1000 window would be
-    extracted starting between position 0 and 256. This  generator must be
+    extracted starting between position 0 and 256. This generator must be
     wrapped by a PyTorch generator object.
 
     Parameters
@@ -206,7 +207,7 @@ class BedGenerator(torch.utils.data.Dataset):
             length `in_window`. See description above for connection with jitter.
 
     signals: torch.tensor, shape=(n,)
-            The signals to predict. A single scalar
+            The signals to predict. A single scalar per sequence.
 
     in_window: int, optional
             The input window size. Default is 2114.
