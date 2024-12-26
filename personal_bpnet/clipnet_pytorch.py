@@ -44,8 +44,7 @@ class PauseNet(torch.nn.Module):
         self.base_trainable = base_trainable
 
         # set new model to base model and freeze params if not base_trainable
-        self.transfer_model = base_model
-        self.transfer_model = CountWrapper(self.transfer_model)
+        self.transfer_model = CountWrapper(base_model)
         if not self.base_trainable:
             for param in self.transfer_model.parameters():
                 param.requires_grad = False
