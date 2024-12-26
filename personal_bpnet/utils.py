@@ -185,3 +185,80 @@ class ChunkedDataLoader(DataLoader):
             persistent_workers=persistent_workers,
         )
 
+
+class BedGenerator(torch.utils.data.Dataset):
+    """A data generator for BPNet inputs.
+
+    This generator takes in an extracted set of sequences, output signals,
+    and control signals, and will return a single element with random
+    jitter and reverse-complement augmentation applied. Jitter is implemented
+    efficiently by taking in data that is wider than the in/out windows by
+    two times the maximum jitter and windows are extracted from that.
+    Essentially, if an input window is 1000 and the maximum jitter is 128, one
+    would pass in data with a length of 1256 and a length 1000 window would be
+    extracted starting between position 0 and 256. This  generator must be
+    wrapped by a PyTorch generator object.
+
+    Parameters
+    ----------
+    sequences: torch.tensor, shape=(n, 4, in_window+2*max_jitter)
+            A one-hot encoded tensor of `n` example sequences, each of input
+            length `in_window`. See description above for connection with jitter.
+
+    signals: torch.tensor, shape=(n,)
+            The signals to predict. A single scalar
+
+    in_window: int, optional
+            The input window size. Default is 2114.
+
+    max_jitter: int, optional
+            The maximum amount of jitter to add, in either direction, to the
+            midpoints that are passed in. Default is 0.
+
+    reverse_complement: bool, optional
+            Whether to reverse complement-augment half of the data. Default is False.
+
+    random_state: int or None, optional
+            Whether to use a deterministic seed or not.
+    """
+
+    def __init__(
+        self,
+        sequences,
+        signals,
+        in_window=2114,
+        max_jitter=0,
+        reverse_complement=False,
+        random_state=None,
+    ):
+        self.in_window = in_window
+        self.max_jitter = max_jitter
+
+        self.reverse_complement = reverse_complement
+        self.random_state = np.random.RandomState(random_state)
+
+        self.signals = signals
+        self.sequences = sequences
+        if signals.shape[0] != sequences.shape[0]:
+            raise ValueError(
+                f"({sequences.shape[0]}) sequences and ({signals.shape[0]}) signals"
+            )
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        i = self.random_state.choice(len(self.sequences))
+        j = (
+            0
+            if self.max_jitter == 0
+            else self.random_state.randint(self.max_jitter * 2)
+        )
+
+        X = self.sequences[i][:, j : j + self.in_window]
+        y = self.signals[i]
+
+        if self.reverse_complement and self.random_state.choice(2) == 1:
+            X = torch.flip(X, [0, 1])
+
+        return X, y
