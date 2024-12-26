@@ -55,7 +55,7 @@ class PauseNet(torch.nn.Module):
         self.cbn = torch.nn.BatchNorm1d(1)
 
         self.transfer_model.linear = self.linear
-        self.transfer_model.cbn = self.linear.cbn
+        self.transfer_model.cbn = self.cbn
 
         # create logger
         self.logger = Logger(
