@@ -34,7 +34,7 @@ class CLIPNET(torch.nn.Module):
     in addition to the model state dict, so that training can be resumed from
     a checkpoint.
 
-    Contains additional maxpool/batch normalization layers not found in BPNet.
+    Contains additional batch normalization layers not found in BPNet.
 
     A basic BPNet model with stranded profile and total count prediction.
 
@@ -156,7 +156,6 @@ class CLIPNET(torch.nn.Module):
         self.iconv = torch.nn.Conv1d(4, n_filters, kernel_size=21, padding=10)
         self.ibn = torch.nn.LazyBatchNorm1d()
         self.irelu = torch.nn.ReLU()
-        self.imaxpool = torch.nn.MaxPool1d(2)
 
         self.rconvs = torch.nn.ModuleList(
             [
@@ -172,7 +171,6 @@ class CLIPNET(torch.nn.Module):
         self.rrelus = torch.nn.ModuleList(
             [torch.nn.ReLU() for i in range(1, self.n_layers + 1)]
         )
-        self.rmaxpool = torch.nn.MaxPool1d(2)
 
         self.fconv = torch.nn.Conv1d(
             n_filters + n_control_tracks,
@@ -238,15 +236,14 @@ class CLIPNET(torch.nn.Module):
         for i in range(self.n_layers):
             X_conv = self.rrelus[i](self.rbn[i](self.rconvs[i](X)))
             X = torch.add(X, X_conv)
-        # X = self.rmaxpool(X)
 
         if X_ctl is None:
             X_w_ctl = X
         else:
             X_w_ctl = torch.cat([X, X_ctl], dim=1)
 
+        # profile prediction
         y_profile = self.pbn(self.fconv(X_w_ctl))[:, :, start:end]
-        # y_profile = self.fconv(X_w_ctl)[:, :, start:end]
 
         # counts prediction
         X = torch.mean(X[:, :, start - 37 : end + 37], dim=2)
@@ -256,7 +253,6 @@ class CLIPNET(torch.nn.Module):
             X = torch.cat([X, torch.log(X_ctl + 1)], dim=-1)
 
         y_counts = self.cbn(self.linear(X).reshape(X.shape[0], 1))
-        # y_counts = self.linear(X).reshape(X.shape[0], 1)
         return y_profile, y_counts
 
     def fit(
