@@ -13,8 +13,11 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 def twohot_encode(seq):
     """
-    Allows you to access id, seq, and twohot(seq) as attributes. Handles IUPAC ambiguity
-    codes for heterozygotes.
+    Calculates a two-hot encoding of a given DNA sequence. Handles IUPAC ambiguity
+    codes for heterozygotes. IMPORTANT: Note that this script halves the encoding
+    for compatibility with models/methods that require one-hot encoded sequences.
+    Heterozygous positions are represented as 0.5 pairs. This differs from the
+    original implementation used in CLIPNET tensorflow, which has double values.
     """
     seq_list = list(seq.upper())
     encoding = {
