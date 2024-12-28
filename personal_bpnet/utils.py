@@ -56,6 +56,40 @@ def reverse_complement_twohot(seq_twohot):
     return rc.swapaxes(0, 1)
 
 
+def get_twohot_fasta_sequences(
+    fasta_fp, cores=8, desc="Twohot encoding", silence=False
+):
+    """
+    Given a fasta file with each record, returns a twohot-encoded array (n, 4, len)
+    array of all sequences.
+    """
+    fa = pyfastx.Fasta(fasta_fp)
+    seqs = [
+        rec.seq
+        for rec in tqdm.tqdm(
+            fa, desc="Reading sequences", disable=silence, total=len(fa)
+        )
+    ]
+    if cores > 1:
+        # Use multiprocessing to parallelize twohot encoding
+        import multiprocessing as mp
+
+        pool = mp.Pool(min(cores, mp.cpu_count()))
+        twohot_encoded = list(
+            tqdm.tqdm(
+                pool.imap(twohot_encode, seqs),
+                total=len(seqs),
+                desc=desc,
+                disable=silence,
+            )
+        )
+    else:
+        twohot_encoded = [
+            twohot_encode(seq) for seq in tqdm.tqdm(seqs, desc=desc, disable=silence)
+        ]
+    return np.stack(twohot_encoded, axis=0)
+
+
 class ChunkedDataset(Dataset):
     def __init__(
         self,

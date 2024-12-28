@@ -10,6 +10,7 @@ from .utils import (
     ChunkedDataset,
     ChunkSampler,
     ScalarLoader,
+    get_twohot_fasta_sequences,
     reverse_complement_twohot,
     twohot_encode,
 )
