@@ -1,5 +1,6 @@
 """
-Data loader for chunked data for CLIPNET.
+A bunch of utility functions for working with personal genome sequences.
+Notably includes a data loader for loading chunked data to train CLIPNET.
 """
 
 import random

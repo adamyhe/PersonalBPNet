@@ -1,7 +1,5 @@
-"""
-__init__.py
-Author: Adam He <adamyhe@gmail.com>
-"""
+# __init__.py
+# Author: Adam He <adamyhe@gmail.com>
 
 from .clipnet_pytorch import CLIPNET, PauseNet
 from .personal_bpnet import PersonalBPNet
