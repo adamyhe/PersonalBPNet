@@ -577,6 +577,7 @@ class PauseNet(torch.nn.Module):
                 # Update the model
                 loss.backward()
                 optimizer.step()
+                print(optimizer.current_lr)
 
                 # Report measures if desired
                 if verbose and iteration % validation_iter == 0:
