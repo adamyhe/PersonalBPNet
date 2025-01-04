@@ -311,6 +311,12 @@ class WarmupScheduler(object):
         self.target_lr = target_lr
         self.current_steps = 0
 
+    def zero_grad(self):
+        self.optimizer.zero_grad()
+
+    def state_dict(self):
+        return self.optimizer.state_dict()
+
     def step(self):
         self.current_steps += 1
         if self.current_steps <= self.warmup_steps:
