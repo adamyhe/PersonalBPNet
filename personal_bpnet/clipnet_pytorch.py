@@ -259,7 +259,6 @@ class CLIPNET(torch.nn.Module):
         self,
         training_data,
         optimizer,
-        warmup_scheduler=None,
         valid_data=None,
         max_epochs=100,
         batch_size=64,
@@ -361,8 +360,6 @@ class CLIPNET(torch.nn.Module):
                 loss = profile_loss + self.alpha * count_loss
                 loss.backward()
                 optimizer.step()
-                if warmup_scheduler is not None:
-                    warmup_scheduler.step()
 
                 # Report measures if desired
                 if verbose and iteration % validation_iter == 0:
