@@ -323,5 +323,6 @@ class WarmupScheduler(object):
             lr = self.initial_lr + (self.target_lr - self.initial_lr) * (
                 self.current_steps / self.warmup_steps
             )
+            self.current_lr = lr
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
