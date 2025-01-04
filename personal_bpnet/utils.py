@@ -308,6 +308,7 @@ class WarmupScheduler(object):
         self.optimizer = optimizer
         self.warmup_steps = warmup_steps
         self.initial_lr = initial_lr
+        self.current_lr = initial_lr
         self.target_lr = target_lr
         self.current_steps = 0
 
