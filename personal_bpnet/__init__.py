@@ -8,9 +8,10 @@ from .utils import (
     ChunkedDataset,
     ChunkSampler,
     ScalarLoader,
+    WarmupScheduler,
     get_twohot_fasta_sequences,
     reverse_complement_twohot,
     twohot_encode,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

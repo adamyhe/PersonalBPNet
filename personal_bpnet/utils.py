@@ -301,3 +301,21 @@ class ScalarLoader(torch.utils.data.Dataset):
             X = torch.flip(X, [0, 1])
 
         return X, y
+
+
+class WarmupScheduler(object):
+    def __init__(self, optimizer, warmup_steps=10, initial_lr=0.0001, target_lr=0.0005):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.initial_lr = initial_lr
+        self.target_lr = target_lr
+        self.current_steps = 0
+
+    def step(self):
+        self.current_steps += 1
+        if self.current_steps <= self.warmup_steps:
+            lr = self.initial_lr + (self.target_lr - self.initial_lr) * (
+                self.current_steps / self.warmup_steps
+            )
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = lr
