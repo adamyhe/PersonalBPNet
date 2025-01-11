@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PersonalBPNet"
-version = "0.1.2"
+version = "0.2.0"
 description = "A small modification to bpnetlite's BPNet to accomodate large validation datasets."
 authors = [{ name = "Adam He", email = "adamyhe@gmail.com" }]
 license = { file = "LICENSE" }
@@ -14,3 +14,6 @@ dependencies = ["bpnet-lite>=0.8.1"]
 
 [tool.setuptools]
 packages = ["personal_bpnet"]
+
+[project.scripts]
+clipnet = "personal_bpnet.cli:cli"
