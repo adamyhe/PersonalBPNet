@@ -131,7 +131,7 @@ class CLIPNET(torch.nn.Module):
 
     def __init__(
         self,
-        n_filters=64,
+        n_filters=512,
         n_layers=8,
         n_outputs=1,
         n_control_tracks=0,
@@ -139,7 +139,7 @@ class CLIPNET(torch.nn.Module):
         profile_output_bias=True,
         count_output_bias=True,
         name=None,
-        trimming=None,
+        trimming=(2114 - 1000) // 2,
         verbose=True,
     ):
         # We need to define all the layers in the __init__ method
