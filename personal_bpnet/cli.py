@@ -328,8 +328,8 @@ def cli():
             )
 
             print(
-                f"Mean profile Pearson: {np.nanmean(profile_pearson)} \
-                    +/- {np.nanstd(profile_pearson, ddof=1)}"
+                f"Mean profile Pearson: {np.nanmean(profile_pearson)} "
+                "+/- {np.nanstd(profile_pearson, ddof=1)}"
             )
             print(f"Median profile Pearson: {np.nanmedian(profile_pearson)}")
             print(f"Mean profile JSD: {np.nanmean(profile_jsd)}")
