@@ -275,7 +275,7 @@ def cli():
         # Rescale predictions
         z = predictions[0][0].shape
         tracks = [
-            torch.nn.functional.softmax(profile.reshape(profile.shape[0], -1))
+            torch.nn.functional.softmax(profile.reshape(profile.shape[0], -1), dim=-1)
             * (torch.exp(count))
             for profile, count in predictions
         ]
