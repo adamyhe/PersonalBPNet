@@ -19,7 +19,7 @@ from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
 
-from personal_bpnet import CLIPNET, PauseNet
+from .clipnet_pytorch import CLIPNET, PauseNet
 
 _help = """
 The following commands are available:
@@ -275,7 +275,8 @@ def cli():
         # Rescale predictions
         z = predictions[0][0].shape
         tracks = [
-            torch.exp(profile).reshape(profile.shape[0], -1) * (torch.exp(count) - 1)
+            torch.nn.functional.softmax(profile.reshape(profile.shape[0], -1))
+            * (torch.exp(count))
             for profile, count in predictions
         ]
         if len(tracks) > 1:
