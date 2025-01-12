@@ -154,7 +154,7 @@ class CLIPNET(torch.nn.Module):
         self.trimming = trimming or 2**n_layers
 
         self.iconv = torch.nn.Conv1d(4, n_filters, kernel_size=21, padding=10)
-        self.ibn = torch.nn.LazyBatchNorm1d()
+        self.ibn = torch.nn.BatchNorm1d(n_filters)
         self.irelu = torch.nn.ReLU()
 
         self.rconvs = torch.nn.ModuleList(
@@ -166,7 +166,7 @@ class CLIPNET(torch.nn.Module):
             ]
         )
         self.rbn = torch.nn.ModuleList(
-            [torch.nn.LazyBatchNorm1d() for i in range(1, self.n_layers + 1)]
+            [torch.nn.BatchNorm1d(n_filters) for i in range(1, self.n_layers + 1)]
         )
         self.rrelus = torch.nn.ModuleList(
             [torch.nn.ReLU() for i in range(1, self.n_layers + 1)]
@@ -179,13 +179,13 @@ class CLIPNET(torch.nn.Module):
             padding=37,
             bias=profile_output_bias,
         )
-        self.pbn = torch.nn.LazyBatchNorm1d()
+        self.pbn = torch.nn.BatchNorm1d(n_outputs)
 
         n_count_control = 1 if n_control_tracks > 0 else 0
         self.linear = torch.nn.Linear(
             n_filters + n_count_control, 1, bias=count_output_bias
         )
-        self.cbn = torch.nn.LazyBatchNorm1d()
+        self.cbn = torch.nn.BatchNorm1d(1)
 
         self.logger = Logger(
             [

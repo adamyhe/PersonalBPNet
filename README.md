@@ -24,10 +24,6 @@ from personal_bpnet import PersonalBPNet, CLIPNET
 
 This package is currently in active dev and may change drastically. Models have not been extensively benchmarked yet. May be lots of typos/copy paste errors. A personalized ChromBPNet fitting method has not been included, as I personally have not had success training such models.
 
-## Note about lazy layers
-
-Because I was lazy, I decided to use lazy layers in the CLIPNET pytorch implementation. These are in early development for pytorch, so their APIs/functionality may be unstable. CLIPNET was developed with torch v2.3.1, so if those layers are misbehaving consider downgrading your torch version.
-
 ## Command line interface
 
 For convenience, prediction and attribution (DeepLIFT/SHAP) methods can be accessed via a CLI:
