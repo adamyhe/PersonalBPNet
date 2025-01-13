@@ -19,7 +19,7 @@ from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
 
-from .clipnet_pytorch import CLIPNET, PauseNet
+from .clipnet_pytorch import CLIPNET
 
 _help = """
 The following commands are available:
@@ -28,7 +28,6 @@ The following commands are available:
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
     predict_tss     Calculate TSS predictions (uses aggressive jittering).
-    predict_scalar  Calculate predictions for a scalar output model (i.e., PauseNet)
 """
 
 
@@ -48,7 +47,7 @@ def cli():
         "--bed_fname",
         type=str,
         required=True,
-        help="Path to bed file of peaks to calculate predictions/attributions for.",
+        help="Path to bed file of regions to calculate predictions/attributions for.",
     )
     parser_parent.add_argument(
         "-o", "--out_fname", type=str, required=True, help="Path to output npz file"
@@ -99,7 +98,7 @@ def cli():
 
     parser_predict = subparsers.add_parser(
         "predict",
-        help="Calculate predictions for a given set of peaks.",
+        help="Calculate predictions for a given set of regions.",
         parents=[parser_parent],
     )
     parser_predict.add_argument(
@@ -152,7 +151,7 @@ def cli():
 
     parser_attribute = subparsers.add_parser(
         "attribute",
-        help="Calculate attributions for a given set of peaks.",
+        help="Calculate attributions for a given set of regions.",
         parents=[parser_parent],
     )
     parser_attribute.add_argument(
@@ -160,9 +159,8 @@ def cli():
         "--mode",
         type=str,
         default="counts",
-        choices={"counts", "profile", "scalar"},
-        help="The type of attribution to calculate. "
-        "Counts and profile are for CLIPNET, scalar is for PauseNet",
+        choices={"counts", "profile"},
+        help="The type of attribution to calculate.",
     )
     parser_attribute.add_argument(
         "-s",
@@ -276,7 +274,7 @@ def cli():
         z = predictions[0][0].shape
         tracks = [
             torch.nn.functional.softmax(profile.reshape(profile.shape[0], -1), dim=-1)
-            * (torch.exp(count))
+            * (torch.exp(count) - 1)
             for profile, count in predictions
         ]
         if len(tracks) > 1:
@@ -346,7 +344,7 @@ def cli():
             )
 
     elif args.cmd == "attribute":
-        # Disable TF32
+        # Disable TF32 to reduce potential low precision issues
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
 
@@ -378,15 +376,13 @@ def cli():
                     n_layers=args.n_layers,
                     trimming=(args.in_window - args.out_window) // 2,
                 )
-                if args.mode == "scalar":
-                    model = PauseNet(m)
                 model.load_state_dict(m)
 
             additional_nonlinear_ops = None
             # Wrap models depending on args.mode
             if args.mode == "counts":
                 model = CountWrapper(model)
-            elif args.mode == "profile":
+            else:
                 model = ProfileWrapper(model)
                 additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
 

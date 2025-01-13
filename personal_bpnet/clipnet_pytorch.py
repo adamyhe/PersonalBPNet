@@ -471,7 +471,7 @@ class CLIPNET(torch.nn.Module):
 
 class PauseNet(torch.nn.Module):
     """
-    A class for transfer learning a CLIPNET model to a single scalara phenotype
+    A class for transfer learning a CLIPNET model to a single scalar phenotype
     per input. The linear and batch normalization (if present) layers in the
     counts head will be reset. By default, the entire network will be set to be
     trainable. If this is not the desired behavior, set base_trainable=False (

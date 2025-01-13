@@ -6,7 +6,7 @@ Redid the validation loop to work with a PyTorch DataLoader (e.g., one generated
 
 Additionally, we include a Pytorch implementation of CLIPNET, which is essentially BPNet with added batch norm layers, similar to what was done with the original CLIPNET implementation in tensorflow.
 
-## Installation
+## Installation and programmatic usage
 
 Clone and install github repo:
 
@@ -22,13 +22,30 @@ Then the `PersonalBPNet` and `CLIPNET` classes can be directly imported:
 from personal_bpnet import PersonalBPNet, CLIPNET
 ```
 
+We also provide a `PauseNet` class. This is designed to be a wrapper around `bpnetlite.bpnet.BPNet`, `PersonalBPNet`, or `CLIPNET` models that transforms them to predict a single scalar output per input sequence. This is designed for fine-tuning the base-resolution models to predicting regulatory phenotypes that can only be represented as a single scalar value per region (e.g., pausing index, for which this class is named). The intended use for this class is as follows:
+
+```python
+from personal_bpnet import CLIPNET, PauseNet
+
+# This is for loading from a weights dictionary.
+# If you saved the full model, just directly use pretrain=torch.load("weights.torch")
+pretrain = CLIPNET(**init_args)
+pretrain.load_state_dict(torch.load("weights.torch"))
+
+model = PauseNet(pretrain)
+model.fit(**params)
+```
+
 This package is currently in active dev and may change drastically. Models have not been extensively benchmarked yet. May be lots of typos/copy paste errors. A personalized ChromBPNet fitting method has not been included, as I personally have not had success training such models.
 
 ## Command line interface
 
-For convenience, prediction and attribution (DeepLIFT/SHAP) methods can be accessed via a CLI:
+For convenience, prediction and attribution (DeepLIFT/SHAP) methods for CLIPNET or PauseNet models can be accessed via a CLI:
 
 ```bash
 clipnet predict -h
 clipnet attribute -h
+
+pausenet predict -h
+pausenet attribute -h
 ```
