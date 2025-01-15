@@ -133,7 +133,7 @@ class CLIPNET(torch.nn.Module):
         self,
         n_filters=512,
         n_layers=8,
-        n_outputs=1,
+        n_outputs=2,
         n_control_tracks=0,
         alpha=1,
         profile_output_bias=True,
