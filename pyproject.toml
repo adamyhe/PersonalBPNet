@@ -10,7 +10,7 @@ authors = [{ name = "Adam He", email = "adamyhe@gmail.com" }]
 license = { file = "LICENSE" }
 urls = { homepage = "https://github.com/adamyhe/PersonalBPNet" }
 requires-python = ">= 3.9"
-dependencies = ["bpnet-lite>=0.8.1"]
+dependencies = ["bpnet-lite>=0.8.1", "pyfastx"]
 
 [tool.setuptools]
 packages = ["personal_bpnet"]
