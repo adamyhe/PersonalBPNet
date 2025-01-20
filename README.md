@@ -44,6 +44,7 @@ For convenience, prediction and attribution (DeepLIFT/SHAP) methods for CLIPNET 
 
 ```bash
 clipnet predict -h
+clipnet predict_tss -h
 clipnet attribute -h
 
 pausenet predict -h

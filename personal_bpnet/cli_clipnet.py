@@ -8,6 +8,7 @@ Wrapper script to calculate attributions and predictions for CLIPNET models
 
 import argparse
 import os
+import random
 import warnings
 
 import numpy as np
@@ -24,10 +25,10 @@ from .clipnet_pytorch import CLIPNET
 _help = """
 The following commands are available:
     predict         Calculate predictions for a CLIPNET model
+    predict_tss     Calculate TSS predictions (uses aggressive jittering).
     attribute       Calculate DeepLIFT/SHAP attributions for a CLIPNET model
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
-    predict_tss     Calculate TSS predictions (uses aggressive jittering).
 """
 
 
@@ -58,15 +59,16 @@ def cli():
         type=str,
         default=None,
         help="Path to model directory. "
-        "Loads and calculates average predictions across all models in directory. "
-        "Use either model_dir or model_fname",
+        "Loads and calculates average predictions/attributions across all models in "
+        "directory. Use either model_dir or model_fname",
     )
     parser_parent.add_argument(
         "-mf",
         "--model_fname",
         type=str,
         default=None,
-        help="Path to model file. Use either model_dir or model_fname",
+        help="Path to specific model file to predict/attribute. Use either model_dir "
+        "or model_fname",
     )
     parser_parent.add_argument(
         "-c",
@@ -140,6 +142,59 @@ def cli():
         "Should not be needed unless using a custom model.",
     )
     parser_predict.add_argument(
+        "--n_layers",
+        type=int,
+        default=8,
+        help="Used to specify model layers. "
+        "Should not be needed unless using a custom model.",
+    )
+
+    # PREDICT_TSS PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    parser_predict_tss = subparsers.add_parser(
+        "predict_tss",
+        help="Calculate TSS predictions for a given set of jittered regions.",
+        parents=[parser_parent],
+    )
+    parser_predict_tss.add_argument(
+        "-s",
+        "--signal_fname",
+        type=str,
+        nargs=2,
+        default=None,
+        help="Signal files containing experimental data to benchmark model "
+        "predictions against. Expected order is [plus_bigWig, minus_bigWig]. "
+        "If not provided, will not calculate performance metrics.",
+    )
+    parser_predict_tss.add_argument(
+        "-j",
+        "--max_jitter",
+        type=int,
+        default=500,
+        help="Maximum number of bp to jitter. Default is 500.",
+    )
+    parser_predict_tss.add_argument(
+        "--in_window",
+        type=int,
+        default=2114,
+        help="Used to specify model input size. "
+        "Should not be needed unless using a custom model.",
+    )
+    parser_predict_tss.add_argument(
+        "--out_window",
+        type=int,
+        default=1000,
+        help="Used to specify model output size. "
+        "Should not be needed unless using a custom model.",
+    )
+    parser_predict_tss.add_argument(
+        "--n_filters",
+        type=int,
+        default=512,
+        help="Used to specify model convolutions. "
+        "Should not be needed unless using a custom model.",
+    )
+    parser_predict_tss.add_argument(
         "--n_layers",
         type=int,
         default=8,
@@ -341,6 +396,85 @@ def cli():
                 profile_jsd=profile_jsd,
                 counts_pearson=counts_pearson,
                 counts_spearman=counts_spearman,
+            )
+
+    elif args.cmd == "predict_tss":
+        # Load data
+        loci = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            signals=args.signal_fname,
+            chroms=args.chroms,
+            in_window=args.in_window,
+            out_window=args.out_window,
+            max_jitter=args.max_jitter,
+            verbose=args.verbose,
+        )
+        if args.signal_fname is not None:
+            seqs, signals = loci
+        else:
+            seqs = loci
+        # Jitter
+        seqs_jitter = []
+        signals_jitter = []
+        for i in range(seqs.shape[0]):
+            j = random.randint(0, args.max_jitter * 2 - 1)
+            seqs_jitter.append(seqs[i, :, j : j + args.in_window])
+            signals_jitter.append(signals[i, :, j : j + args.out_window])
+
+        X = torch.stack(seqs_jitter)
+        signals = torch.abs(torch.stack(signals_jitter))
+
+        # Calculate predictions
+        predictions = []
+        for f in model_names:
+            # Load model inside of for loop to prevent VRAM leak
+            m = torch.load(f)
+            # Check if models are state_dict or module
+            if isinstance(m, torch.nn.Module):
+                model = m
+            else:
+                model = CLIPNET(
+                    n_filters=args.n_filters,
+                    n_outputs=2,
+                    n_control_tracks=0,
+                    n_layers=args.n_layers,
+                    trimming=(args.in_window - args.out_window) // 2,
+                )
+                model.load_state_dict(m)
+
+            # Calculate and log predictions
+            predictions.append(
+                predict(model, X, batch_size=args.batch_size, verbose=args.verbose)
+            )
+
+            # clear VRAM
+            del m
+            torch.cuda.empty_cache()
+
+        # Rescale predictions
+        z = predictions[0][0].shape
+        tracks = [
+            torch.nn.functional.softmax(profile.reshape(profile.shape[0], -1), dim=-1)
+            * (torch.exp(count) - 1)
+            for profile, count in predictions
+        ]
+        if len(tracks) > 1:
+            track = torch.stack(tracks).mean(dim=0).cpu().reshape(*z)
+        else:
+            track = tracks[0].cpu().reshape(*z)
+
+        # Calculate metrics
+        if args.signal_fname is not None:
+            pred_tss = torch.argmax(track, dim=-1).to(torch.float)
+            expt_tss = torch.argmax(signals, dim=-1).to(torch.float)
+            np.savez_compressed(args.out_fname, pred=pred_tss, expt=expt_tss)
+
+            print(
+                f"+ strand TSS Pearson: {pearson_corr(pred_tss[:, 0], expt_tss[:, 0])}"
+            )
+            print(
+                f"- strand TSS Pearson: {pearson_corr(pred_tss[:, 1], expt_tss[:, 1])}"
             )
 
     elif args.cmd == "attribute":
