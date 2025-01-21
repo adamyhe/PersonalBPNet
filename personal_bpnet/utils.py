@@ -289,16 +289,16 @@ class ScalarLoader(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         i = self.random_state.choice(len(self.sequences))
         j = (
-            (self.X.shape[-1] - self.in_window) // 2
+            (self.sequences.shape[-1] - self.in_window) // 2
             if self.max_jitter == 0
             else self.random_state.randint(self.max_jitter * 2)
         )
 
-        X = self.sequences[i][:, j : j + self.in_window]
+        X = self.sequences[i, :, j : j + self.in_window]
         y = self.signals[i]
 
         if self.reverse_complement and self.random_state.choice(2) == 1:
-            X = torch.flip(X, [0, 1])
+            X = torch.stack([reverse_complement_twohot(x) for x in X])
 
         return X, y
 
