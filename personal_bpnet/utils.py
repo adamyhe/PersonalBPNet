@@ -289,7 +289,7 @@ class ScalarLoader(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         i = self.random_state.choice(len(self.sequences))
         j = (
-            0
+            (self.X.shape[-1] - self.in_window) // 2
             if self.max_jitter == 0
             else self.random_state.randint(self.max_jitter * 2)
         )
