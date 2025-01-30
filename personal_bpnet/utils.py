@@ -298,7 +298,7 @@ class ScalarLoader(torch.utils.data.Dataset):
         y = self.signals[i]
 
         if self.reverse_complement and self.random_state.choice(2) == 1:
-            X = torch.stack([reverse_complement_twohot(x) for x in X])
+            X = torch.stack([reverse_complement_twohot(x.numpy().copy()) for x in X])
 
         return X, y
 
