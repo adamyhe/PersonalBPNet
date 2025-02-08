@@ -52,20 +52,14 @@ def cli():
         "-o", "--out_fname", type=str, required=True, help="Path to output npz file"
     )
     parser_parent.add_argument(
-        "-md",
-        "--model_dir",
-        type=str,
-        default=None,
-        help="Path to model directory. "
-        "Loads and calculates average predictions across all models in directory. "
-        "Use either model_dir or model_fname",
-    )
-    parser_parent.add_argument(
-        "-mf",
+        "-m",
         "--model_fname",
         type=str,
-        default=None,
-        help="Path to model file. Use either model_dir or model_fname",
+        required=True,
+        help="Path to model directory or to specific model file to predict/attribute. "
+        "If a directory, loads and calculates average predictions/attributions across "
+        "all models in directory. If a specific model file, will only predict/attribute "
+        "that model. ",
     )
     parser_parent.add_argument(
         "-c",
@@ -217,16 +211,12 @@ def cli():
     # MAIN CODE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     # Get model paths
-    if (args.model_dir is not None and args.model_fname is not None) or (
-        args.model_dir is None and args.model_fname is None
-    ):
-        raise ValueError("Use exactly one of model_dir or model_fname, not both.")
-    if args.model_fname is not None:
-        model_names = [args.model_fname]
-    else:
+    if os.path.isdir(args.model_fname):
         model_names = [
-            os.path.join(args.model_dir, f"f{i}.torch") for i in range(1, 10)
+            os.path.join(args.model_fname, f"f{i}.torch") for i in range(1, 10)
         ]
+    else:
+        model_names = [args.model_fname]
 
     if args.cmd == "predict":
         # Load data
