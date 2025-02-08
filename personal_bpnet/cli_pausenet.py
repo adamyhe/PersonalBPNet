@@ -158,7 +158,17 @@ def cli():
         "--save_ohe",
         type=str,
         default=None,
-        help="Where to save OHE of sequences. Defaults to not saving.",
+        help="Where to save OHE of sequences. Defaults to not saving. "
+        "Set this & hypothetical if you intend to use these attributions for "
+        "tfmodisco-lite.",
+    )
+    parser_attribute.add_argument(
+        "-y",
+        "--hypothetical",
+        action="store_true",
+        help="Whether to use hypothetical attributions. Defaults to False. "
+        "Set this & save_ohe if you intend to use these attributions for "
+        "tfmodisco-lite.",
     )
     parser_attribute.add_argument(
         "-n",
@@ -325,6 +335,7 @@ def cli():
                 deep_lift_shap(
                     model,
                     X,
+                    hypothetical=args.hypothetical,
                     batch_size=args.batch_size,
                     n_shuffles=args.n_shuffles,
                     random_state=args.random_state,
