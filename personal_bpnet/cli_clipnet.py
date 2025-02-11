@@ -280,6 +280,15 @@ def cli():
     else:
         model_names = [args.model_fname]
 
+    # Set number of threads to max of available
+    if not torch.cuda.is_available():
+        if "SLURM_CPUS_PER_TASK" in os.environ:
+            n = min(int(os.environ["SLURM_CPUS_PER_TASK"]), os.cpu_count())
+        else:
+            n = os.cpu_count()
+        torch.set_num_threads(n)
+        torch.set_num_interop_threads(n)
+
     if args.cmd == "predict":
         # Load data
         data = extract_loci(
