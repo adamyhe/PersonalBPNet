@@ -253,13 +253,7 @@ def cli():
 
             # Calculate and log predictions
             prediction_.append(
-                predict(
-                    model,
-                    X,
-                    batch_size=args.batch_size,
-                    verbose=args.verbose,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
-                )
+                predict(model, X, batch_size=args.batch_size, verbose=args.verbose)
             )
 
             # clear VRAM
@@ -336,7 +330,6 @@ def cli():
                     n_shuffles=args.n_shuffles,
                     random_state=args.random_state,
                     verbose=args.verbose,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
                 ).numpy()
             )
 

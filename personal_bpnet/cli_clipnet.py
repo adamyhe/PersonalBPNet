@@ -316,13 +316,7 @@ def cli():
 
             # Calculate and log predictions
             predictions.append(
-                predict(
-                    model,
-                    X,
-                    batch_size=args.batch_size,
-                    verbose=args.verbose,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
-                )
+                predict(model, X, batch_size=args.batch_size, verbose=args.verbose)
             )
 
             # clear VRAM
@@ -449,13 +443,7 @@ def cli():
 
             # Calculate and log predictions
             predictions.append(
-                predict(
-                    model,
-                    X,
-                    batch_size=args.batch_size,
-                    verbose=args.verbose,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
-                )
+                predict(model, X, batch_size=args.batch_size, verbose=args.verbose)
             )
 
             # clear VRAM
@@ -522,12 +510,13 @@ def cli():
                 )
                 model.load_state_dict(m)
 
-            additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
+            additional_nonlinear_ops = None
             # Wrap models depending on args.attribute_type
             if args.attribute_type == "counts":
                 model = CountWrapper(model)
             else:
                 model = ProfileWrapper(model)
+                additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
 
             # Calculate and log attributions
             attributions.append(
@@ -540,7 +529,6 @@ def cli():
                     random_state=args.random_state,
                     verbose=args.verbose,
                     additional_nonlinear_ops=additional_nonlinear_ops,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
                 ).numpy()
             )
 
