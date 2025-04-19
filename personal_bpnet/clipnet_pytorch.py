@@ -661,6 +661,5 @@ class PauseNet(torch.nn.Module):
                 break
             if scheduler is not None:
                 scheduler.step()
-                print(f"Epoch {epoch + 1}, Learning Rate: {scheduler.get_last_lr()[0]}")
 
         torch.save(self, f"{self.name}.final.torch")
