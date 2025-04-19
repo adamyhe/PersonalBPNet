@@ -22,7 +22,23 @@ Then the `PersonalBPNet` and `CLIPNET` classes can be directly imported:
 from personal_bpnet import PersonalBPNet, CLIPNET
 ```
 
-We also provide a `PauseNet` class. This is designed to be a wrapper around `bpnetlite.bpnet.BPNet`, `PersonalBPNet`, or `CLIPNET` models that transforms them to predict a single scalar output per input sequence. This is designed for fine-tuning the base-resolution models to predicting regulatory phenotypes that can only be represented as a single scalar value per region (e.g., pausing index, for which this class is named). The intended use for this class is as follows:
+The pre-trained CLIPNET models we've deposited on Zenodo (https://zenodo.org/records/14632152) are just the model weights, so to you'll need to use `load_state_dict`:
+
+```python
+from personal_bpnet import CLIPNET
+
+os.system("wget https://zenodo.org/records/14632152/files/lcl_procap_models.tar --quiet")
+os.system("tar -xvf https://zenodo.org/records/14632152/files/lcl_procap_models.tar")
+model = CLIPNET(
+    n_filters=512, n_outputs=2, n_control_tracks=0, n_layers=8, trimming=(2114-1000) // 2
+)
+model.load_state_dict(m)
+model.load_state_dict(torch.load("lcl_procap_models/f1.torch")) # 9 model replicates.
+```
+
+### PauseNet
+
+We also provide a `PauseNet` class (no published models yet because I haven't gotten this to work well). This is designed to be a wrapper around `bpnetlite.bpnet.BPNet`, `PersonalBPNet`, or `CLIPNET` models that transforms them to predict a single scalar output per input sequence. This is designed for fine-tuning the base-resolution models to predicting regulatory phenotypes that can only be represented as a single scalar value per region (e.g., pausing index, for which this class is named). The intended use for this class is as follows:
 
 ```python
 from personal_bpnet import CLIPNET, PauseNet
