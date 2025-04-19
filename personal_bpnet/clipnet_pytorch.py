@@ -1,9 +1,14 @@
+# clipnet_pytorch.py
+# Author: Adam He <adamyhe@gmail.com>
+
 """
 Copied from bpnetlite
 Original license: https://github.com/jmschrei/bpnet-lite/blob/master/LICENSE
 
 Redid the validation loop to work with a PyTorch DataLoader, rather than
-having to load the whole validation set into memory at once.
+having to load the whole validation set into memory at once. Also added a bunch of
+batch normalization layers, which were used in CLIPNET and appear to improve
+performance.
 
 Also, the model checkpoints save the optimizer state dict and epoch number
 in addition to the model state dict, so that training can be resumed from
@@ -259,6 +264,7 @@ class CLIPNET(torch.nn.Module):
         self,
         training_data,
         optimizer,
+        scheduler=None,
         valid_data=None,
         max_epochs=100,
         batch_size=64,
@@ -289,6 +295,9 @@ class CLIPNET(torch.nn.Module):
 
         optimizer: torch.optim.Optimizer
                 An optimizer to control the training of the model.
+
+        scheduler: torch.optim.lr_scheduler._LRScheduler or None
+                A scheduler to control the learning rate of the optimizer. Optional.
 
         valid_data: torch.utils.data.DataLoader
                 A generator that produces examples to earlystop on. If n_control_tracks
@@ -465,6 +474,8 @@ class CLIPNET(torch.nn.Module):
 
             if early_stopping is not None and early_stop_count >= early_stopping:
                 break
+            if scheduler is not None:
+                scheduler.step()
 
         torch.save(self, "{}.final.torch".format(self.name))
 
@@ -537,6 +548,7 @@ class PauseNet(torch.nn.Module):
         self,
         training_data,
         optimizer,
+        scheduler=None,
         valid_data=None,
         max_epochs=100,
         batch_size=64,
@@ -647,5 +659,8 @@ class PauseNet(torch.nn.Module):
 
             if early_stopping is not None and early_stop_count >= early_stopping:
                 break
+            if scheduler is not None:
+                scheduler.step()
+                print(f"Epoch {epoch + 1}, Learning Rate: {scheduler.get_last_lr()[0]}")
 
         torch.save(self, f"{self.name}.final.torch")

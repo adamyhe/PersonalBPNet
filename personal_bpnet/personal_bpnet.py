@@ -1,3 +1,6 @@
+# personal_bpnet.py
+# Author: Adam He <adamyhe@gmail.com>
+
 """
 Copied from bpnetlite
 Original license: https://github.com/jmschrei/bpnet-lite/blob/master/LICENSE
@@ -251,6 +254,7 @@ class PersonalBPNet(torch.nn.Module):
         self,
         training_data,
         optimizer,
+        scheduler=None,
         valid_data=None,
         max_epochs=100,
         batch_size=64,
@@ -281,6 +285,9 @@ class PersonalBPNet(torch.nn.Module):
 
         optimizer: torch.optim.Optimizer
                 An optimizer to control the training of the model.
+
+        scheduler: torch.optim.lr_scheduler._LRScheduler or None
+                A scheduler to control the learning rate of the optimizer.
 
         valid_data: torch.utils.data.DataLoader
                 A generator that produces examples to earlystop on. If n_control_tracks
@@ -457,5 +464,8 @@ class PersonalBPNet(torch.nn.Module):
 
             if early_stopping is not None and early_stop_count >= early_stopping:
                 break
+            if scheduler is not None:
+                scheduler.step()
+                print(f"Epoch {epoch+1}, Learning Rate: {scheduler.get_last_lr()[0]}")
 
         torch.save(self, "{}.final.torch".format(self.name))
