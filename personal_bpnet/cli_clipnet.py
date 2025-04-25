@@ -16,6 +16,7 @@ import torch
 from bpnetlite.bpnet import CountWrapper, ProfileWrapper, _ProfileLogitScaling
 from bpnetlite.performance import pearson_corr, spearman_corr
 from scipy.spatial.distance import jensenshannon
+from sklearn.linear_model import LinearRegression
 from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
@@ -392,6 +393,11 @@ def cli():
             counts_spearman = spearman_corr(
                 pred_log_counts, torch.log1p(signals_flattened.sum(dim=-1))
             )
+            print(pred_log_counts.shape, signals_flattened.sum(dim=-1).shape)
+            lm = LinearRegression(fit_intercept=True).fit(
+                pred_log_counts.reshape(-1, 1),
+                torch.log1p(signals_flattened.sum(dim=-1).reshape(-1, 1)),
+            )
 
             print(
                 f"Mean profile Pearson: {np.nanmean(profile_pearson)} "
@@ -402,6 +408,8 @@ def cli():
             print(f"Median profile JSD: {np.nanmedian(profile_jsd)}")
             print(f"Count Pearson: {counts_pearson}")
             print(f"Count Spearman: {counts_spearman}")
+            print(f"Count slope: {lm.coef_[0]}")
+            print(f"Count intercept: {lm.intercept_}")
 
             np.savez_compressed(
                 args.out_fname.replace(".npz", "_metrics.npz"),
