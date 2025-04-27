@@ -397,7 +397,7 @@ class CLIPNET(torch.nn.Module):
                             y_profile, y_counts = predict(
                                 self,
                                 X_val,
-                                args=X_ctl_val,
+                                args=(X_ctl_val,),
                                 batch_size=batch_size,
                                 device="cuda",
                             )
@@ -625,7 +625,7 @@ class PauseNet(torch.nn.Module):
                             y_pred = predict(
                                 self,
                                 X_val,
-                                args=X_ctl_val,
+                                args=(X_ctl_val,),
                                 batch_size=batch_size,
                                 device="cuda",
                             )

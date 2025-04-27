@@ -387,7 +387,7 @@ class PersonalBPNet(torch.nn.Module):
                             y_profile, y_counts = predict(
                                 self,
                                 X_val,
-                                args=X_ctl_val,
+                                args=(X_ctl_val,),
                                 batch_size=batch_size,
                                 device="cuda",
                             )
