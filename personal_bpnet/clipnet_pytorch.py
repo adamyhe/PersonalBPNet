@@ -387,9 +387,19 @@ class CLIPNET(torch.nn.Module):
                         obs_counts = []
 
                         # Loop over the validation data
-                        for X_val, y_val in valid_data:
+                        for data in valid_data:
+                            if len(data) == 3:
+                                X_val, X_ctl_val, y_val = data
+                            else:
+                                X_val, y_val = data
+                                X_ctl_val = None
+
                             y_profile, y_counts = predict(
-                                self, X_val, batch_size=batch_size, device="cuda"
+                                self,
+                                X_val,
+                                args=X_ctl_val,
+                                batch_size=batch_size,
+                                device="cuda",
                             )
                             obs_counts.append(y_val.sum(dim=(-2, -1)).reshape(-1, 1))
                             pred_counts.append(y_counts)
@@ -605,9 +615,19 @@ class PauseNet(torch.nn.Module):
                         obs_val = []
 
                         # Loop over the validation data
-                        for X_val, y_val in valid_data:
+                        for data in valid_data:
+                            if len(data) == 3:
+                                X_val, X_ctl_val, y_val = data
+                            else:
+                                X_val, y_val = data
+                                X_ctl_val = None
+
                             y_pred = predict(
-                                self, X_val, batch_size=batch_size, device="cuda"
+                                self,
+                                X_val,
+                                args=X_ctl_val,
+                                batch_size=batch_size,
+                                device="cuda",
                             )
                             obs_val.append(y_val)
                             pred_val.append(y_pred)
