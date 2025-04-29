@@ -339,10 +339,10 @@ class CLIPNET(torch.nn.Module):
             for data in training_data:
                 if len(data) == 3:
                     X, X_ctl, y = data
-                    X, X_ctl, y = X.cuda(), X_ctl.cuda(), y.cuda()
+                    X, X_ctl, y = X.cuda(), torch.abs(X_ctl.cuda()), torch.abs(y.cuda())
                 else:
                     X, y = data
-                    X, y = X.cuda(), y.cuda()
+                    X, y = torch.abs(X.cuda()), torch.abs(y.cuda())
                     X_ctl = None
 
                 # Clear the optimizer and set the model to training mode
@@ -390,14 +390,16 @@ class CLIPNET(torch.nn.Module):
                         for data in valid_data:
                             if len(data) == 3:
                                 X_val, X_ctl_val, y_val = data
+                                X_ctl_val = (torch.abs(X_ctl_val),)
                             else:
                                 X_val, y_val = data
                                 X_ctl_val = None
 
+                            y_val = torch.abs(y_val)
                             y_profile, y_counts = predict(
                                 self,
                                 X_val,
-                                args=(X_ctl_val,),
+                                args=X_ctl_val,
                                 batch_size=batch_size,
                                 device="cuda",
                             )
@@ -591,7 +593,7 @@ class PauseNet(torch.nn.Module):
                 y_pred = self(X, X_ctl)
 
                 # Calculate loss
-                loss = log1pMSELoss(y_pred, y).mean()
+                loss = log1pMSELoss(y_pred, torch.abs(y)).mean()
 
                 # Extract the loss for logging
                 loss_ = loss.item()
@@ -618,14 +620,16 @@ class PauseNet(torch.nn.Module):
                         for data in valid_data:
                             if len(data) == 3:
                                 X_val, X_ctl_val, y_val = data
+                                X_ctl_val = (X_ctl_val,)
                             else:
                                 X_val, y_val = data
                                 X_ctl_val = None
 
+                            y_val = torch.abs(y_val)
                             y_pred = predict(
                                 self,
                                 X_val,
-                                args=(X_ctl_val,),
+                                args=X_ctl_val,
                                 batch_size=batch_size,
                                 device="cuda",
                             )

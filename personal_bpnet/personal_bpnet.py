@@ -380,6 +380,7 @@ class PersonalBPNet(torch.nn.Module):
                         for data in valid_data:
                             if len(data) == 3:
                                 X_val, X_ctl_val, y_val = data
+                                X_ctl_val = (X_ctl_val,)
                             else:
                                 X_val, y_val = data
                                 X_ctl_val = None
@@ -387,7 +388,7 @@ class PersonalBPNet(torch.nn.Module):
                             y_profile, y_counts = predict(
                                 self,
                                 X_val,
-                                args=(X_ctl_val,),
+                                args=X_ctl_val,
                                 batch_size=batch_size,
                                 device="cuda",
                             )
