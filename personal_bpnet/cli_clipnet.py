@@ -505,10 +505,6 @@ def cli():
             )
 
     elif args.cmd == "attribute":
-        # Disable TF32 to reduce potential low precision issues
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-
         # Load data
         X = extract_loci(
             loci=args.bed_fname,
