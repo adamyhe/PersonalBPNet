@@ -44,8 +44,8 @@ def _get_tf_same_padding(kernel_size, dilation=1):
 class AsymmetricPad(torch.nn.Module):
     """
     This layer manually injects asymmetric padding into a convolutional layer.
-    Set the padding on the convolutional layer to "0" and use this layer to
-    inject asymmetric padding. This reproduces TensorFlow's "same" padding.
+    Set the padding on the convolutional layer to 0 and use this layer to
+    inject asymmetric padding. This reproduces TensorFlow's "same" padding in PyTorch.
     """
 
     def __init__(self, kernel_size, dilation=1):
@@ -57,6 +57,19 @@ class AsymmetricPad(torch.nn.Module):
         pad_left, pad_right = _get_tf_same_padding(self.kernel_size, self.dilation)
         pad_layer = torch.nn.ConstantPad1d((pad_left, pad_right), 0)
         return pad_layer(x)
+
+
+class TwoHotToOneHot(torch.nn.Module):
+    """
+    A small wrapper to allow models trained on TwoHot data to be used on OneHot data.
+    """
+
+    def __init__(self, model):
+        super(TwoHotToOneHot, self).__init__()
+        self.model = model
+
+    def forward(self, x):
+        return self.model(x * 2)
 
 
 class CLIPNET_TF(torch.nn.Module):

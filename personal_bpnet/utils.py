@@ -65,12 +65,7 @@ def get_twohot_fasta_sequences(
     array of all sequences.
     """
     fa = pyfastx.Fasta(fasta_fp)
-    seqs = [
-        rec.seq
-        for rec in tqdm.tqdm(
-            fa, desc="Reading sequences", disable=silence, total=len(fa)
-        )
-    ]
+    seqs = [rec.seq for rec in fa]
     if cores > 1:
         # Use multiprocessing to parallelize twohot encoding
         import multiprocessing as mp
