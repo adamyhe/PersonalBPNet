@@ -63,7 +63,7 @@ models = [
 ]
 ```
 
-These models have been converted to expecting inputs of the shape (N, 4, 1000). **IMPORTANT** Models loaded in this fashion still expect inputs to be two-hot encoded (see description in the [README](https://github.com/Danko-Lab/clipnet/blob/main/README.md) of our TensorFlow package). For compatibility with packages that only allow one-hot encoded sequences, please use the `TwoHotToOneHot` wrapper:
+These models have been converted to expecting inputs of the shape (N, 4, 1000). **IMPORTANT:** Models loaded in this fashion still expect inputs to be two-hot encoded (see description in the [README](https://github.com/Danko-Lab/clipnet/blob/main/README.md) of our TensorFlow package). For compatibility with packages that only allow one-hot encoded sequences, please use the `TwoHotToOneHot` wrapper:
 
 ```python
 from personal_bpnet.clipnet_tensorflow import TwoHotToOneHot
