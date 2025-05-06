@@ -29,7 +29,7 @@ The `PersonalBPNet` class is identical to the `BPNet` class from bpnetlite, but 
 
 The `CLIPNET` class modifies `PersonalBPNet` to include batch normalization layers after each convolutional and linear layer, which we've found to improve prediction accuracy.
 
-We've deposited pre-trained CLIPNET PyTorch weights on [Zenodo](https://zenodo.org/records/15258030). These were trained using the same multi-individual LCL PRO-cap dataset as the original CLIPNET models (training data also available on Zenodo). We've only saved the model weights, so to you'll need to initialize the models, then use `load_state_dict`:
+We've deposited pre-trained CLIPNET PyTorch weights on [Zenodo](https://zenodo.org/records/15258030). These were trained using the same multi-individual LCL PRO-cap dataset as the original CLIPNET models (training data also available on Zenodo). We've only saved the model weights, so you'll need to initialize the models, then use `load_state_dict`:
 
 ```python
 import os
@@ -56,7 +56,7 @@ from personal_bpnet.clipnet_tensorflow import CLIPNET_TF
 
 os.makedirs("clipnet_models/", exist_ok=True)
 for i in range(1, 10):
-    os.system(f"wget https://zenodo.org/records/10408623/files/fold_{i}.h5 -P clipnet_models/;")
+    os.system(f"wget https://zenodo.org/records/10408623/files/fold_{i}.h5 -P clipnet_models/")
 
 models = [
     CLIPNET_TF.from_tf(f"clipnet_models/fold_{i}.h5") for i in range(1, 10)
@@ -70,6 +70,12 @@ from personal_bpnet.clipnet_tensorflow import TwoHotToOneHot
 
 ohe_models = [TwoHotToOneHot(m) for m in models]
 ```
+
+This class works for all models trained using the `rnn_v10` architecture in the [original CLIPNET repo](https://github.com/Danko-Lab/clipnet/blob/main/clipnet/rnn_v10.py). At present, this includes
+
+- the original [LCL PRO-cap models](https://zenodo.org/records/10408623),
+- [K562 PRO-cap models](https://zenodo.org/records/14037356) (fine-tuned from the above),
+- [ablated LCL PRO-cap models](https://zenodo.org/records/14037356).
 
 ### PauseNet
 

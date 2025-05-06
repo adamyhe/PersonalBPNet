@@ -130,7 +130,7 @@ class CLIPNET_TF(torch.nn.Module):
         self.cbnorm = torch.nn.BatchNorm1d(1)
         self.crelu = torch.nn.ReLU()
 
-    def forward(self, X):
+    def forward(self, X, X_ctl=None):
         """
         A forward pass of the model.
 
@@ -141,6 +141,8 @@ class CLIPNET_TF(torch.nn.Module):
         ----------
         X: torch.tensor, shape=(batch_size, 4, length)
                 The two-hot encoded batch of sequences.
+        X_ctl: None
+                Should be None for compatibility with BPNet wrappers.
 
         Returns
         -------
@@ -225,6 +227,8 @@ class CLIPNET_TF(torch.nn.Module):
         model.ibnorm.bias.data = _convert_b(w[ibnorm]["beta:0"])
         model.ibnorm.running_mean = _convert_b(w[ibnorm][mm])
         model.ibnorm.running_var = _convert_b(w[ibnorm][mv])
+        model.ibnorm.running_mean.requires_grad = False
+        model.ibnorm.running_var.requires_grad = False
         model.ibnorm.eps = 0.001
         model.ibnorm.momentum = 0.99
 
@@ -237,6 +241,8 @@ class CLIPNET_TF(torch.nn.Module):
         model.ibn.bias.data = _convert_b(w[ibn]["beta:0"])
         model.ibn.running_mean = _convert_b(w[ibn][mm])
         model.ibn.running_var = _convert_b(w[ibn][mv])
+        model.ibn.running_mean.requires_grad = False
+        model.ibn.running_var.requires_grad = False
         model.ibn.eps = 0.001
         model.ibn.momentum = 0.99
 
@@ -249,6 +255,8 @@ class CLIPNET_TF(torch.nn.Module):
         model.sbnorm.bias.data = _convert_b(w[sbn]["beta:0"])
         model.sbnorm.running_mean = _convert_b(w[sbn][mm])
         model.sbnorm.running_var = _convert_b(w[sbn][mv])
+        model.sbnorm.running_mean.requires_grad = False
+        model.sbnorm.running_var.requires_grad = False
         model.sbnorm.eps = 0.001
         model.sbnorm.momentum = 0.99
 
@@ -266,6 +274,8 @@ class CLIPNET_TF(torch.nn.Module):
             model.rbnorms[i - 1].bias.data = _convert_b(w[rbn]["beta:0"])
             model.rbnorms[i - 1].running_mean = _convert_b(w[rbn][mm])
             model.rbnorms[i - 1].running_var = _convert_b(w[rbn][mv])
+            model.rbnorms[i - 1].running_mean.requires_grad = False
+            model.rbnorms[i - 1].running_var.requires_grad = False
             model.rbnorms[i - 1].eps = 0.001
             model.rbnorms[i - 1].momentum = 0.99
 
@@ -274,6 +284,8 @@ class CLIPNET_TF(torch.nn.Module):
             model.skipbnorms[i - 1].bias.data = _convert_b(w[skipbn]["beta:0"])
             model.skipbnorms[i - 1].running_mean = _convert_b(w[skipbn][mm])
             model.skipbnorms[i - 1].running_var = _convert_b(w[skipbn][mv])
+            model.skipbnorms[i - 1].running_mean.requires_grad = False
+            model.skipbnorms[i - 1].running_var.requires_grad = False
             model.skipbnorms[i - 1].eps = 0.001
             model.skipbnorms[i - 1].momentum = 0.99
 
@@ -286,6 +298,8 @@ class CLIPNET_TF(torch.nn.Module):
         model.pbnorm.bias.data = _convert_b(w[pbn]["beta:0"])
         model.pbnorm.running_mean = _convert_b(w[pbn][mm])
         model.pbnorm.running_var = _convert_b(w[pbn][mv])
+        model.pbnorm.running_mean.requires_grad = False
+        model.pbnorm.running_var.requires_grad = False
         model.pbnorm.eps = 0.001
         model.pbnorm.momentum = 0.99
 
@@ -298,6 +312,8 @@ class CLIPNET_TF(torch.nn.Module):
         model.cbnorm.bias.data = _convert_b(w[cbn]["beta:0"])
         model.cbnorm.running_mean = _convert_b(w[cbn][mm])
         model.cbnorm.running_var = _convert_b(w[cbn][mv])
+        model.cbnorm.running_mean.requires_grad = False
+        model.cbnorm.running_var.requires_grad = False
         model.cbnorm.eps = 0.001
         model.cbnorm.momentum = 0.99
 
