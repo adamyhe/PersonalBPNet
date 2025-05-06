@@ -68,8 +68,8 @@ class TwoHotToOneHot(torch.nn.Module):
         super(TwoHotToOneHot, self).__init__()
         self.model = model
 
-    def forward(self, x):
-        return self.model(x * 2)
+    def forward(self, X, X_ctl=None):
+        return self.model(X * 2, X_ctl)
 
 
 class CLIPNET_TF(torch.nn.Module):
