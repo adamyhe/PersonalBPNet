@@ -79,11 +79,18 @@ class CLIPNET_TF(torch.nn.Module):
     for converting the TensorFlow weights to PyTorch. Note that this architecture
     differs from the one found in clipnet_pytorch.py, which is a complete rewrite
     in PyTorch and takes a lot more cues from ProCapNet/BPNet.
+
+    Parameters
+    ----------
+    counts_head_only : bool
+            If True, create a model with only the counts head.
+            Set to load "PauseNet" models, which only predict a single scalar.
     """
 
-    def __init__(self):
+    def __init__(self, counts_head_only=False):
         super(CLIPNET_TF, self).__init__()
         self.n_layers = 9
+        self.counts_head_only = counts_head_only
 
         self.input = torch.nn.Identity()
         self.ibnorm = torch.nn.BatchNorm1d(4)
@@ -121,9 +128,10 @@ class CLIPNET_TF(torch.nn.Module):
         )
         self.skipmp = torch.nn.MaxPool1d(2)
 
-        self.plinear = torch.nn.Linear(7872, 1000)
-        self.pbnorm = torch.nn.BatchNorm1d(1000)
-        self.prelu = torch.nn.ReLU()
+        if not self.counts_head_only:
+            self.plinear = torch.nn.Linear(7872, 1000)
+            self.pbnorm = torch.nn.BatchNorm1d(1000)
+            self.prelu = torch.nn.ReLU()
 
         self.cavgpool = torch.nn.AdaptiveAvgPool1d(1)
         self.clinear = torch.nn.Linear(64, 1)
@@ -179,24 +187,26 @@ class CLIPNET_TF(torch.nn.Module):
             X = self.skiprelus[i](X)
         # Max pooling after residual layers
         X = self.skipmp(X)
-        # Profile prediction
-        # We need to manually permute and flatten since the pytorch
-        # conv layers output a tensor of shape (batch, channels, steps), but
-        # the linear weights expect a tensor of shape (batch, steps, channels)
-        y_profile = X.permute(0, 2, 1).reshape(X.shape[0], -1)
-        y_profile = self.plinear(y_profile)
-        y_profile = self.pbnorm(y_profile)
-        y_profile = self.prelu(y_profile)
         # Count prediction
         y_counts = self.cavgpool(X).squeeze(-1)
         y_counts = self.clinear(y_counts)
         y_counts = self.cbnorm(y_counts)
         y_counts = self.crelu(y_counts)
-
-        return y_profile, y_counts
+        if self.counts_head_only:
+            return y_counts
+        else:
+            # Profile prediction
+            # We need to manually permute and flatten since the pytorch
+            # conv layers output a tensor of shape (batch, channels, steps), but
+            # the linear weights expect a tensor of shape (batch, steps, channels)
+            y_profile = X.permute(0, 2, 1).reshape(X.shape[0], -1)
+            y_profile = self.plinear(y_profile)
+            y_profile = self.pbnorm(y_profile)
+            y_profile = self.prelu(y_profile)
+            return y_profile, y_counts
 
     @classmethod
-    def from_tf(cls, filename):
+    def from_tf(cls, filename, counts_head_only=False):
         """Loads a model from the CLIPNET TensorFlow format.
 
         Note that this method does not require the installation of TensorFlow and
@@ -210,6 +220,10 @@ class CLIPNET_TF(torch.nn.Module):
         ----------
         filename: str
                 The name of the h5 file that stores the trained model parameters.
+        counts_head_only: bool
+                Use this flag to load a model with only the counts head. This is mostly
+                used for "PauseNet" models, which trim the profile head and fine-tune
+                the counts head.
 
         Returns
         -------
@@ -220,7 +234,7 @@ class CLIPNET_TF(torch.nn.Module):
         w = h5["model_weights"]
         k, b, mm, mv = "kernel:0", "bias:0", "moving_mean:0", "moving_variance:0"
 
-        model = CLIPNET_TF()
+        model = CLIPNET_TF(counts_head_only=counts_head_only)
 
         ibnorm = _namer("batch_normalization", "")
         model.ibnorm.weight.data = _convert_b(w[ibnorm]["gamma:0"])
@@ -289,32 +303,54 @@ class CLIPNET_TF(torch.nn.Module):
             model.skipbnorms[i - 1].eps = 0.001
             model.skipbnorms[i - 1].momentum = 0.99
 
-        plinear = _namer("dense", "")
-        model.plinear.weight.data = torch.nn.Parameter(torch.tensor(w[plinear][k][:].T))
-        model.plinear.bias.data = _convert_b(w[plinear][b])
+        if counts_head_only:
+            clinear = _namer("new_dense", "")
+            model.clinear.weight.data = torch.nn.Parameter(
+                torch.tensor(w[clinear][k][:].T)
+            )
+            model.clinear.bias.data = _convert_b(w[clinear][b])
 
-        pbn = _namer("batch_normalization", "_21")
-        model.pbnorm.weight.data = _convert_b(w[pbn]["gamma:0"])
-        model.pbnorm.bias.data = _convert_b(w[pbn]["beta:0"])
-        model.pbnorm.running_mean = _convert_b(w[pbn][mm])
-        model.pbnorm.running_var = _convert_b(w[pbn][mv])
-        model.pbnorm.running_mean.requires_grad = False
-        model.pbnorm.running_var.requires_grad = False
-        model.pbnorm.eps = 0.001
-        model.pbnorm.momentum = 0.99
+            cbn = _namer("new_batch_normalization", "")
+            model.cbnorm.weight.data = _convert_b(w[cbn]["gamma:0"])
+            model.cbnorm.bias.data = _convert_b(w[cbn]["beta:0"])
+            model.cbnorm.running_mean = _convert_b(w[cbn][mm])
+            model.cbnorm.running_var = _convert_b(w[cbn][mv])
+            model.cbnorm.running_mean.requires_grad = False
+            model.cbnorm.running_var.requires_grad = False
+            model.cbnorm.eps = 0.001
+            model.cbnorm.momentum = 0.99
 
-        clinear = _namer("dense", "_1")
-        model.clinear.weight.data = torch.nn.Parameter(torch.tensor(w[clinear][k][:].T))
-        model.clinear.bias.data = _convert_b(w[clinear][b])
+        else:
+            plinear = _namer("dense", "")
+            model.plinear.weight.data = torch.nn.Parameter(
+                torch.tensor(w[plinear][k][:].T)
+            )
+            model.plinear.bias.data = _convert_b(w[plinear][b])
 
-        cbn = _namer("batch_normalization", "_22")
-        model.cbnorm.weight.data = _convert_b(w[cbn]["gamma:0"])
-        model.cbnorm.bias.data = _convert_b(w[cbn]["beta:0"])
-        model.cbnorm.running_mean = _convert_b(w[cbn][mm])
-        model.cbnorm.running_var = _convert_b(w[cbn][mv])
-        model.cbnorm.running_mean.requires_grad = False
-        model.cbnorm.running_var.requires_grad = False
-        model.cbnorm.eps = 0.001
-        model.cbnorm.momentum = 0.99
+            pbn = _namer("batch_normalization", "_21")
+            model.pbnorm.weight.data = _convert_b(w[pbn]["gamma:0"])
+            model.pbnorm.bias.data = _convert_b(w[pbn]["beta:0"])
+            model.pbnorm.running_mean = _convert_b(w[pbn][mm])
+            model.pbnorm.running_var = _convert_b(w[pbn][mv])
+            model.pbnorm.running_mean.requires_grad = False
+            model.pbnorm.running_var.requires_grad = False
+            model.pbnorm.eps = 0.001
+            model.pbnorm.momentum = 0.99
+
+            clinear = _namer("dense", "_1")
+            model.clinear.weight.data = torch.nn.Parameter(
+                torch.tensor(w[clinear][k][:].T)
+            )
+            model.clinear.bias.data = _convert_b(w[clinear][b])
+
+            cbn = _namer("batch_normalization", "_22")
+            model.cbnorm.weight.data = _convert_b(w[cbn]["gamma:0"])
+            model.cbnorm.bias.data = _convert_b(w[cbn]["beta:0"])
+            model.cbnorm.running_mean = _convert_b(w[cbn][mm])
+            model.cbnorm.running_var = _convert_b(w[cbn][mv])
+            model.cbnorm.running_mean.requires_grad = False
+            model.cbnorm.running_var.requires_grad = False
+            model.cbnorm.eps = 0.001
+            model.cbnorm.momentum = 0.99
 
         return model
