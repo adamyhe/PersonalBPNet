@@ -11,7 +11,7 @@ Additionally, we include a Pytorch implementation of CLIPNET, which is essential
 Clone and install github repo:
 
 ```sh
-git clone git@github.com:adamyhe/PersonalBPNet.git
+git clone https://github.com/adamyhe/PersonalBPNet.git
 cd PersonalBPNet
 pip install -e . # for editable mode.
 ```
