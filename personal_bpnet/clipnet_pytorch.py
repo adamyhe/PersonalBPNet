@@ -339,10 +339,10 @@ class CLIPNET(torch.nn.Module):
             for data in training_data:
                 if len(data) == 3:
                     X, X_ctl, y = data
-                    X, X_ctl, y = X.cuda(), torch.abs(X_ctl.cuda()), torch.abs(y.cuda())
+                    X, X_ctl, y = X.cuda().float(), torch.abs(X_ctl.cuda()), torch.abs(y.cuda())
                 else:
                     X, y = data
-                    X, y = torch.abs(X.cuda()), torch.abs(y.cuda())
+                    X, y = X.cuda().float(), torch.abs(y.cuda())
                     X_ctl = None
 
                 # Clear the optimizer and set the model to training mode
@@ -402,6 +402,7 @@ class CLIPNET(torch.nn.Module):
                                 args=X_ctl_val,
                                 batch_size=batch_size,
                                 device="cuda",
+				dtype=torch.float,
                             )
                             obs_counts.append(y_val.sum(dim=(-2, -1)).reshape(-1, 1))
                             pred_counts.append(y_counts)
