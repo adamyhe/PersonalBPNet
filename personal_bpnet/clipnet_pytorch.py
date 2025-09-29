@@ -337,11 +337,15 @@ class CLIPNET(torch.nn.Module):
             tic = time.time()
 
             for data in training_data:
-                if len(data) == 3:
-                    X, X_ctl, y = data
-                    X, X_ctl, y = X.cuda().float(), torch.abs(X_ctl.cuda()), torch.abs(y.cuda())
+                if len(data) == 4:
+                    X, X_ctl, y, label = data
+                    X, X_ctl, y = (
+                        X.cuda().float(),
+                        torch.abs(X_ctl.cuda()),
+                        torch.abs(y.cuda()),
+                    )
                 else:
-                    X, y = data
+                    X, y, label = data
                     X, y = X.cuda().float(), torch.abs(y.cuda())
                     X_ctl = None
 
@@ -388,11 +392,11 @@ class CLIPNET(torch.nn.Module):
 
                         # Loop over the validation data
                         for data in valid_data:
-                            if len(data) == 3:
-                                X_val, X_ctl_val, y_val = data
+                            if len(data) == 4:
+                                X_val, X_ctl_val, y_val, label = data
                                 X_ctl_val = (torch.abs(X_ctl_val),)
                             else:
-                                X_val, y_val = data
+                                X_val, y_val, label = data
                                 X_ctl_val = None
 
                             y_val = torch.abs(y_val)
@@ -402,7 +406,7 @@ class CLIPNET(torch.nn.Module):
                                 args=X_ctl_val,
                                 batch_size=batch_size,
                                 device="cuda",
-				dtype=torch.float,
+                                dtype=torch.float,
                             )
                             obs_counts.append(y_val.sum(dim=(-2, -1)).reshape(-1, 1))
                             pred_counts.append(y_counts)

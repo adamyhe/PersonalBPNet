@@ -327,8 +327,8 @@ class PersonalBPNet(torch.nn.Module):
             tic = time.time()
 
             for data in training_data:
-                if len(data) == 3:
-                    X, X_ctl, y = data
+                if len(data) == 4:
+                    X, X_ctl, y, label = data
                     X, X_ctl, y = X.cuda(), X_ctl.cuda(), y.cuda()
                 else:
                     X, y = data
@@ -378,8 +378,8 @@ class PersonalBPNet(torch.nn.Module):
 
                         # Loop over the validation data
                         for data in valid_data:
-                            if len(data) == 3:
-                                X_val, X_ctl_val, y_val = data
+                            if len(data) == 4:
+                                X_val, X_ctl_val, y_val, label = data
                                 X_ctl_val = (X_ctl_val,)
                             else:
                                 X_val, y_val = data
