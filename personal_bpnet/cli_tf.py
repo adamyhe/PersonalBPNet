@@ -259,13 +259,18 @@ def cli():
             # Rescale predictions
             track = count * profile / (profile.sum(dim=-1, keepdim=True) + 1e-3)
             # Save predictions
-            np.savez_compressed(args.out_fname, track.numpy())
+            if args.signal_fname is not None:
+                signals_flattened = torch.cat(
+                    [signals[:, 0, :], torch.abs(signals[:, 1, :])], dim=-1
+                )
+                np.savez_compressed(
+                    args.out_fname, pred=track.numpy(), obs=signals_flattened.numpy()
+                )
+            else:
+                np.savez_compressed(args.out_fname, track.numpy())
 
         # Calculate metrics
         if args.signal_fname is not None:
-            signals_flattened = torch.cat(
-                [signals[:, 0, :], torch.abs(signals[:, 1, :])], dim=-1
-            )
             pred_log_counts = torch.log10(track.sum(dim=-1) + 1e-3)
 
             profile_pearson = pearson_corr(track, signals_flattened)
