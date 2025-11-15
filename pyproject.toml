@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PersonalBPNet"
-version = "0.6.2"
+version = "0.6.3"
 description = "A small modification to bpnetlite's BPNet to accomodate large validation datasets."
 authors = [{ name = "Adam He", email = "adamyhe@gmail.com" }]
 license = { file = "LICENSE" }
 urls = { homepage = "https://github.com/adamyhe/PersonalBPNet" }
 requires-python = ">= 3.9"
-dependencies = ["bpnet-lite>=0.9.4", "tangermeme>=1.0.0", "pyfastx"]
+dependencies = ["bpnet-lite<=0.9.0", "tangermeme>=1.0.0", "pyfastx"]
 
 [tool.setuptools]
 packages = ["personal_bpnet"]
