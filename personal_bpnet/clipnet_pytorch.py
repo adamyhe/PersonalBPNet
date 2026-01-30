@@ -21,11 +21,9 @@ import numpy as np
 import torch
 from bpnetlite.bpnet import CountWrapper
 from bpnetlite.logging import Logger
-from bpnetlite.losses import log1pMSELoss
+from bpnetlite.losses import _mixture_loss, log1pMSELoss
 from bpnetlite.performance import calculate_performance_measures, pearson_corr
 from tangermeme.predict import predict
-
-from .loss import _mixture_loss
 
 torch.backends.cudnn.benchmark = True
 
@@ -354,7 +352,6 @@ class CLIPNET(torch.nn.Module):
 
                 X = X.to(device).float()
                 y = torch.abs(y).to(device)
-                # print(X.shape, X_ctl.shape, y.shape, labels.shape)
 
                 # Clear the optimizer and set the model to training mode
                 optimizer.zero_grad()

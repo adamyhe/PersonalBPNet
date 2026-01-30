@@ -18,7 +18,7 @@ import time
 import numpy as np
 import torch
 from bpnetlite.logging import Logger
-from bpnetlite.losses import MNLLLoss, log1pMSELoss
+from bpnetlite.losses import _mixture_loss
 from bpnetlite.performance import calculate_performance_measures, pearson_corr
 from tangermeme.predict import predict
 
@@ -260,6 +260,8 @@ class PersonalBPNet(torch.nn.Module):
         batch_size=64,
         validation_iter=100,
         early_stopping=None,
+        dtype=torch.bfloat16,
+        device="cuda",
         verbose=True,
     ):
         """Fit the model to data and validate it periodically.
@@ -275,7 +277,6 @@ class PersonalBPNet(torch.nn.Module):
         at the end of training. Additionally, a log will be saved of the
         training and validation statistics, e.g. time and performance.
 
-
         Parameters
         ----------
         training_data: torch.utils.data.DataLoader
@@ -287,7 +288,7 @@ class PersonalBPNet(torch.nn.Module):
                 An optimizer to control the training of the model.
 
         scheduler: torch.optim.lr_scheduler._LRScheduler or None
-                A scheduler to control the learning rate of the optimizer.
+                A scheduler to control the learning rate of the optimizer. Optional.
 
         valid_data: torch.utils.data.DataLoader
                 A generator that produces examples to earlystop on. If n_control_tracks
@@ -328,37 +329,27 @@ class PersonalBPNet(torch.nn.Module):
 
             for data in training_data:
                 if len(data) == 4:
-                    X, X_ctl, y, label = data
-                    X, X_ctl, y = X.cuda(), X_ctl.cuda(), y.cuda()
+                    X, X_ctl, y, labels = data
+                    X_ctl = torch.abs(X_ctl).to(device).float()
                 else:
-                    X, y = data
-                    X, y = X.cuda(), y.cuda()
+                    X, y, labels = data
                     X_ctl = None
+
+                X = X.to(device).float()
+                y = torch.abs(y).to(device)
 
                 # Clear the optimizer and set the model to training mode
                 optimizer.zero_grad()
                 self.train()
 
                 # Run forward pass
-                y_profile, y_counts = self(X, X_ctl)
-                y_profile = y_profile.reshape(y_profile.shape[0], -1)
-                y_profile = torch.nn.functional.log_softmax(y_profile, dim=-1)
-
-                y = y.reshape(y.shape[0], -1)
-                y_ = y.sum(dim=-1).reshape(-1, 1)
-
-                # Calculate the profile and count losses
-                profile_loss = MNLLLoss(y_profile, y).mean()
-                count_loss = log1pMSELoss(y_counts, y_).mean()
-
-                # Extract the profile loss for logging
-                profile_loss_ = profile_loss.item()
-                count_loss_ = count_loss.item()
-
-                # Mix losses together and update the model
-                loss = profile_loss + self.alpha * count_loss
-                loss.backward()
-                optimizer.step()
+                with torch.autocast(device_type=device, dtype=dtype):
+                    y_hat_logits, y_hat_logcounts = self(X, X_ctl)
+                    training_profile_loss_, training_count_loss_, loss = _mixture_loss(
+                        y, y_hat_logits, y_hat_logcounts, self.alpha, labels
+                    )
+                    loss.backward()
+                    optimizer.step()
 
                 # Report measures if desired
                 if verbose and iteration % validation_iter == 0:
@@ -378,19 +369,21 @@ class PersonalBPNet(torch.nn.Module):
 
                         # Loop over the validation data
                         for data in valid_data:
-                            if len(data) == 4:
-                                X_val, X_ctl_val, y_val, label = data
-                                X_ctl_val = (X_ctl_val,)
+                            if len(data) == 3:
+                                X_val, X_ctl_val, y_val = data
+                                X_ctl_val = (torch.abs(X_ctl_val),)
                             else:
                                 X_val, y_val = data
                                 X_ctl_val = None
 
+                            y_val = torch.abs(y_val)
                             y_profile, y_counts = predict(
                                 self,
                                 X_val,
                                 args=X_ctl_val,
                                 batch_size=batch_size,
-                                device="cuda",
+                                device=device,
+                                dtype=dtype,
                             )
                             obs_counts.append(y_val.sum(dim=(-2, -1)).reshape(-1, 1))
                             pred_counts.append(y_counts)
@@ -440,8 +433,8 @@ class PersonalBPNet(torch.nn.Module):
                                 iteration,
                                 train_time,
                                 valid_time,
-                                profile_loss_,
-                                count_loss_,
+                                training_profile_loss_,
+                                training_count_loss_,
                                 measures["profile_mnll"].mean().item(),
                                 np.nan_to_num(profile_corr).mean(),
                                 np.nan_to_num(count_corr).mean(),
