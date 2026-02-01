@@ -324,12 +324,12 @@ class WarmupScheduler(object):
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
 
-
-def plot_side(arr, ylim=[-2, 2.5], yticks=[0, 2], pic_name=None):
+def plot_side(arr, ylim=[-2, 2.5], yticks=[0, 2], xticks=[], pic_name=None):
     """
     Adapted from APARENT code (Bogard et al. 2019)
     """
-    assert arr.shape[0] % 2 == 0, "arr must have even length."
+    if arr.shape[0] % 2 != 0:
+        raise ValueError("arr must have even length.")
     midpoint = int(arr.shape[0] / 2)
     pl = arr[:midpoint]
     mn = arr[midpoint:]
@@ -343,7 +343,7 @@ def plot_side(arr, ylim=[-2, 2.5], yticks=[0, 2], pic_name=None):
     axes = plt.gca()
     axes.set_ylim(ylim)
     axes.set_yticks(yticks)
-    axes.set_xticks([])
+    axes.set_xticks(xticks)
     axes.spines[["right", "top", "bottom"]].set_visible(False)
     plt.xlim(-0.5, pl.shape[0] - 0.5)
     axes.tick_params(labelleft=False)
