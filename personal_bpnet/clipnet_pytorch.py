@@ -1,4 +1,4 @@
-# clipnet_pytorch.py
+# _deprecated_clipnet_pytorch.py
 # Author: Adam He <adamyhe@gmail.com>
 
 """
@@ -13,6 +13,11 @@ performance.
 Also, the model checkpoints save the optimizer state dict and epoch number
 in addition to the model state dict, so that training can be resumed from
 a checkpoint.
+
+DEPRECATION WARNING: This file is deprecated and unmaintained, but is kept
+here for backwards compatibility. The current working version is bnbpnet.py, which
+1) Adds optional masking on the profile loss, and
+2) Switches to only checkpointing every epoch instead of every n steps.
 """
 
 import time
