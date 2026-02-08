@@ -23,7 +23,7 @@ from bpnetlite.logging import Logger
 from bpnetlite.performance import calculate_performance_measures, pearson_corr
 from tangermeme.predict import predict
 
-from .losses import _mixture_loss
+from .losses import _mixture_loss_masked
 
 torch.backends.cudnn.benchmark = True
 
@@ -333,8 +333,10 @@ class BNBPNet(torch.nn.Module):
                 # Run forward pass
                 with torch.autocast(device_type=device, dtype=dtype):
                     y_hat_logits, y_hat_logcounts = self(X, X_ctl)
-                    training_profile_loss_, training_count_loss_, loss = _mixture_loss(
-                        y, y_hat_logits, y_hat_logcounts, self.alpha, labels, mask
+                    training_profile_loss_, training_count_loss_, loss = (
+                        _mixture_loss_masked(
+                            y, y_hat_logits, y_hat_logcounts, self.alpha, labels, mask
+                        )
                     )
                     loss.backward()
                     optimizer.step()
