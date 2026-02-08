@@ -20,9 +20,10 @@ import time
 import numpy as np
 import torch
 from bpnetlite.logging import Logger
-from bpnetlite.losses import _mixture_loss
 from bpnetlite.performance import calculate_performance_measures, pearson_corr
 from tangermeme.predict import predict
+
+from .losses import _mixture_loss
 
 torch.backends.cudnn.benchmark = True
 
