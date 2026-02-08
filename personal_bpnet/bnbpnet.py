@@ -306,6 +306,8 @@ class BNBPNet(torch.nn.Module):
         for epoch in range(max_epochs):
             tic = time.time()
 
+            training_profile_loss_log = 0
+            training_count_loss_log = 0
             for data in training_data:
                 if len(data) == 4:
                     X, X_ctl, y, labels = data
@@ -333,11 +335,16 @@ class BNBPNet(torch.nn.Module):
                 # Run forward pass
                 with torch.autocast(device_type=device, dtype=dtype):
                     y_hat_logits, y_hat_logcounts = self(X, X_ctl)
-                    training_profile_loss_, training_count_loss_, loss = (
+                    training_profile_loss, training_count_loss, loss = (
                         _mixture_loss_masked(
                             y, y_hat_logits, y_hat_logcounts, self.alpha, labels, mask
                         )
                     )
+                    # Log training statistics
+                    training_profile_loss_log += training_profile_loss.item()
+                    training_count_loss_log += training_count_loss.item()
+
+                    # Backpropagate
                     loss.backward()
                     optimizer.step()
 
@@ -424,8 +431,8 @@ class BNBPNet(torch.nn.Module):
                         epoch,
                         train_time,
                         valid_time,
-                        training_profile_loss_,
-                        training_count_loss_,
+                        training_profile_loss_log / len(training_data),
+                        training_count_loss_log / len(training_data),
                         measures["profile_mnll"].mean().item(),
                         np.nan_to_num(profile_corr).mean(),
                         np.nan_to_num(count_corr).mean(),
