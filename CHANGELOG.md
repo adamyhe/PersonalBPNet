@@ -15,5 +15,6 @@
 
 ### Changed
 - `personal_bpnet/__init__.py`: `__version__` is now derived dynamically from package metadata via `importlib.metadata` rather than being hardcoded. `pyproject.toml` is now the sole source of truth for the version number.
+- `losses.py` (`_mixture_loss_masked`): when `mask=None`, now delegates directly to bpnetlite's `_mixture_loss` rather than reimplementing the no-mask path. `MNLLLoss_masked` consequently no longer handles `mask=None`.
 
 ## [0.6.6] - prior release
