@@ -56,8 +56,9 @@ def _mixture_loss_masked(
     # Calculate the profile and count losses
     if labels is not None:
         profile_loss = MNLLLoss_masked(
-            y_hat_logits[labels == 1], y[labels == 1],
-            mask[labels == 1] if mask is not None else None
+            y_hat_logits[labels == 1],
+            y[labels == 1],
+            mask[labels == 1] if mask is not None else None,
         ).mean()
     else:
         profile_loss = MNLLLoss_masked(y_hat_logits, y, mask).mean()
@@ -95,7 +96,6 @@ def MNLLLoss_masked(logits, true_counts, mask=None):
     if mask is not None:
         loss = 0
         for logits_i, true_counts_i, mask_i in zip(logits, true_counts, mask):
-            print(logits_i.shape, true_counts_i.shape, mask_i.shape)
             # Repeat mask to match logits shape
             mask_i = (
                 mask_i.repeat(logits_i.shape[0], 1)
