@@ -4,6 +4,7 @@
 
 ### Fixed
 - `procapnet.py`: mask was extracted from `y` after slicing to `n_outputs` channels, causing the last signal channel (e.g. minus strand) to be used as the mask instead of the actual mask track. Mask is now extracted before slicing.
+- `procapnet.py`: `y_valid` was not sliced to `n_outputs` channels before validation, causing a shape mismatch when `y_has_mask=True` and `y_valid` included the mask channel. `y_valid` is now sliced to `n_outputs` channels at the start of `fit()` when `y_has_mask=True`.
 - `procapnet.py`: removed stray characters at end of `fit()` that caused a `SyntaxError` on import.
 - `losses.py` (`_mixture_loss_masked`): when `labels` was provided, `mask` was not filtered alongside `y` and `y_hat_logits`, causing mask rows to be misaligned with the filtered examples. `mask` is now filtered with `mask[labels == 1]`.
 - `losses.py` (`MNLLLoss_masked`): per-example shape after masking was compared against the full-batch tensor shape instead of the per-example pre-masking shape, causing the unsqueeze branch to always trigger. Fixed to compare against `logits_i.shape`.

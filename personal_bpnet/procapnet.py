@@ -137,6 +137,9 @@ class ProCapNet(BPNet):
             Default is None.
         """
 
+        if y_valid is not None and y_has_mask:
+            y_valid = y_valid[:, : self.n_outputs, :]
+
         if X_ctl_valid is not None:
             X_ctl_valid = (X_ctl_valid,)
 
