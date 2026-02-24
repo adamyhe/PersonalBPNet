@@ -1,3 +1,6 @@
+# utils.py
+# Author: Adam He <adamyhe@gmail.com>
+
 """
 A bunch of utility functions for working with personal genome sequences.
 Notably includes a data loader for loading chunked data to train CLIPNET.
@@ -323,6 +326,7 @@ class WarmupScheduler(object):
             self.current_lr = lr
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = lr
+
 
 def plot_side(arr, ylim=[-2, 2.5], yticks=[0, 2], xticks=[], pic_name=None):
     """

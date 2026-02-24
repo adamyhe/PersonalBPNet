@@ -63,7 +63,7 @@ Final model: `{name}.final.torch` — full serialized module
 ### File status notes
 
 - `personal_bpnet/_DEPRECATED_bnbpnet.py`: Deprecated, kept for backwards compat. The current version is `personal_bpnet/clipnet_pytorch.py`.
-- `personal_bpnet/procapnet_orig.py`: Verbatim copy of the original ProCapNet implementation, included for full reproducibility of the original project's results. Do not modify.
+- `personal_bpnet/procapnet_orig.py`: Original ProCapNet implementation (reference).
 - `personal_bpnet/_motif_call_old/`: Old motif calling scripts, unmaintained.
 
 ### Version

@@ -1,6 +1,6 @@
 **/*_old/
-.DS_Store
-.vscode
+**/.DS_Store
+**/.vscode
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

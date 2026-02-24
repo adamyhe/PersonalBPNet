@@ -1,4 +1,4 @@
-# _deprecated_clipnet_pytorch.py
+# clipnet_pytorch.py
 # Author: Adam He <adamyhe@gmail.com>
 
 """
@@ -453,8 +453,8 @@ class CLIPNET(torch.nn.Module):
                                 iteration,
                                 train_time,
                                 valid_time,
-                                training_profile_loss_,
-                                training_count_loss_,
+                                training_profile_loss_.item(),
+                                training_count_loss_.item(),
                                 measures["profile_mnll"].mean().item(),
                                 np.nan_to_num(profile_corr).mean(),
                                 np.nan_to_num(count_corr).mean(),
