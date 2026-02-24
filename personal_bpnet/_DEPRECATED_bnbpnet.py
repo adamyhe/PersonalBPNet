@@ -313,7 +313,7 @@ class BNBPNet(torch.nn.Module):
                     X, X_ctl, y, labels = data
                     X_ctl = torch.abs(X_ctl).to(device).float()
                     if ctl_has_mask:
-                        mask = X_ctl[:, :, -1].bool()
+                        mask = X_ctl[:, :, -1].eq(1.0).bool()
                         if self.n_control_tracks > 0:
                             X_ctl = X_ctl[:, :, :-1]
                         else:
@@ -340,10 +340,8 @@ class BNBPNet(torch.nn.Module):
                             y, y_hat_logits, y_hat_logcounts, self.alpha, labels, mask
                         )
                     )
-                    # Log training statistics
                     training_profile_loss_log += training_profile_loss.item()
                     training_count_loss_log += training_count_loss.item()
-
                     # Backpropagate
                     loss.backward()
                     optimizer.step()

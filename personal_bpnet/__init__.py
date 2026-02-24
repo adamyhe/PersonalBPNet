@@ -1,4 +1,6 @@
 # __init__.py
 # Author: Adam He <adamyhe@gmail.com>
 
-__version__ = "0.6.6"
+from importlib.metadata import version
+
+__version__ = version("PersonalBPNet")

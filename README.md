@@ -14,6 +14,12 @@ Clone and install github repo:
 pip install git+https://github.com/adamyhe/personalbpnet.git
 ```
 
+To load TensorFlow-trained weights (requires `h5py`), install with the `tf` optional dependency:
+
+```sh
+pip install "git+https://github.com/adamyhe/personalbpnet.git[tf]"
+```
+
 ### PyTorch API
 
 The `PersonalBPNet` and `CLIPNET` classes can be directly imported:
@@ -74,6 +80,33 @@ This class works for all models trained using the `rnn_v10` architecture in the 
 - the original [LCL PRO-cap models](https://zenodo.org/records/10408623),
 - [K562 PRO-cap models](https://zenodo.org/records/14037356) (fine-tuned from the above),
 - [ablated LCL PRO-cap models](https://zenodo.org/records/14037356).
+
+For an example on how to use these models and this porting code, please see our [Google Colab notebook](https://github.com/Danko-Lab/clipnet/blob/main/clipnet_basic_tutorial.ipynb).
+
+### ProCapNet
+
+We also provide a `ProCapNet` class, a subclass of `bpnetlite.bpnet.BPNet` that implements the masked profile loss from the [ProCapNet paper](https://www.biorxiv.org/content/10.1101/2024.05.28.596138v2). The masked loss allows specific positions (e.g., those overlapping peaks from other assays) to be excluded from the MNLL profile loss, which improves model attributions.
+
+```python
+from personal_bpnet.procapnet import ProCapNet
+
+model = ProCapNet(n_filters=512, n_outputs=2, n_control_tracks=0, count_loss_weight=100)
+model.fit(
+    training_data,   # DataLoader yielding (X, y, labels) or (X, X_ctl, y, labels)
+    optimizer,
+    X_valid=X_valid,
+    y_valid=y_valid,
+    y_has_mask=True,
+    max_epochs=50,
+    device="cuda",
+)
+```
+
+When `y_has_mask=True` (the default), training batches must provide `y` with shape `(N, n_outputs+1, L)` where the final channel is a boolean mask — positions where the mask is `True` are excluded from the profile loss. `y_valid` should have shape `(N, n_outputs, L)` with no mask channel.
+
+Because the forward pass is identical to `bpnetlite.bpnet.BPNet`, `ProCapNet` weights can be loaded directly into a standard `BPNet` instance (and vice versa), as long as the same init arguments are used.
+
+A verbatim copy of the original ProCapNet implementation is included at `personal_bpnet/procapnet_orig.py` for full reproducibility of the original project's results.
 
 ### PauseNet
 
