@@ -204,7 +204,7 @@ class ProCapNet(BPNet):
                 )
 
                 valid_profile_loss, valid_count_loss, valid_loss = _mixture_loss_masked(
-                    y_valid, y_hat_logits, y_hat_logcounts, self.count_loss_weight
+                    y_valid, y_hat_logits, y_hat_logcounts, self.count_loss_weight, labels=None, mask=None
                 )
 
                 measures = calculate_performance_measures(

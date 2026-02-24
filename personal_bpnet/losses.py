@@ -6,7 +6,7 @@ This module contains the losses used by BNBPNet for training.
 """
 
 import torch
-from bpnetlite.losses import MNLLLoss, log1pMSELoss
+from bpnetlite.losses import MNLLLoss, log1pMSELoss, _mixture_loss
 
 
 def _mixture_loss_masked(
@@ -35,7 +35,7 @@ def _mixture_loss_masked(
     labels: torch.Tensor, shape=(n, ..., L)
             A tensor with `n` examples and `L` possible categories.
 
-    mask: torch.Tensor, shape=(n, L)
+    mask: torch.Tensor, shape=(n, L) or None
             A boolean tensor with `n` examples and `L` possible categories.
             Positions where `mask[i, j] == True` will be masked out.
 
@@ -51,14 +51,15 @@ def _mixture_loss_masked(
             The mixture loss.
     """
 
+    if mask is None:
+        return _mixture_loss(y, y_hat_logits, y_hat_logcounts, count_loss_weight, labels)
+
     y_counts = y.sum(dim=(-1, -2)).reshape(y.shape[0], 1)
 
     # Calculate the profile and count losses
     if labels is not None:
         profile_loss = MNLLLoss_masked(
-            y_hat_logits[labels == 1],
-            y[labels == 1],
-            mask[labels == 1] if mask is not None else None,
+            y_hat_logits[labels == 1], y[labels == 1], mask[labels == 1]
         ).mean()
     else:
         profile_loss = MNLLLoss_masked(y_hat_logits, y, mask).mean()
@@ -93,28 +94,24 @@ def MNLLLoss_masked(logits, true_counts, mask=None):
             The multinomial log likelihood loss of the true counts given the
             predicted probabilities
     """
-    if mask is not None:
-        loss = 0
-        for logits_i, true_counts_i, mask_i in zip(logits, true_counts, mask):
-            # Repeat mask to match logits shape
-            mask_i = (
-                mask_i.repeat(logits_i.shape[0], 1)
-                if len(mask_i.shape) < len(logits_i.shape)
-                else mask_i
-            )
-            # First mask out positions
-            logits_i = torch.masked_select(logits_i, mask_i)[None, ...]
-            true_counts_i = torch.masked_select(true_counts_i, mask_i)[None, ...]
-            # Then flatten and log softmax
-            logits_i = logits_i.reshape(logits_i.shape[0], -1)
-            logps_i = torch.nn.functional.log_softmax(logits_i, dim=-1)
-            # Ensure correct shape, since MNLLLoss expects N, ..., L
-            if logps_i.shape < logits_i.shape:
-                logps_i = logps_i.unsqueeze(dim=-1)
-                true_counts_i = true_counts_i.unsqueeze(dim=-1)
-            loss += MNLLLoss(logps_i, true_counts_i).mean()
-        return loss / len(logits)
-    else:
-        logits = logits.reshape(logits.shape[0], -1)
-        logps = torch.nn.functional.log_softmax(logits, dim=-1)
-        return MNLLLoss(logps, true_counts)
+    loss = 0
+    for logits_i, true_counts_i, mask_i in zip(logits, true_counts, mask):
+        # Repeat mask to match logits shape
+        mask_i = (
+            mask_i.repeat(logits_i.shape[0], 1)
+            if len(mask_i.shape) < len(logits_i.shape)
+            else mask_i
+        )
+        # First mask out positions
+        logits_i = torch.masked_select(logits_i, mask_i)[None, ...]
+        true_counts_i = torch.masked_select(true_counts_i, mask_i)[None, ...]
+        # Then flatten and log softmax
+        logits_i = logits_i.reshape(logits_i.shape[0], -1)
+        true_counts_i = true_counts_i.reshape(true_counts_i.shape[0], -1)
+        logps_i = torch.nn.functional.log_softmax(logits_i, dim=-1)
+        # Ensure correct shape, since MNLLLoss expects N, ..., L
+        if logps_i.shape < logits_i.shape:
+            logps_i = logps_i.unsqueeze(dim=-1)
+            true_counts_i = true_counts_i.unsqueeze(dim=-1)
+        loss += MNLLLoss(logps_i, true_counts_i).mean()
+    return loss / len(logits)
