@@ -2,7 +2,7 @@
 
 > This model is in active development, no published weights yet, and has not been extensively benchmarked.
 
-See [installation](installation.md) first.
+See [the README](../README.md#install) for installation.
 
 `PauseNet` is a transfer-learning wrapper (a subclass of `bpnetlite.bpnet.CountWrapper`) around `bpnetlite.bpnet.BPNet`, `PersonalBPNet`, or `CLIPNET` models that transforms them to predict a single scalar output per input sequence. This is designed for fine-tuning the base-resolution models to predict regulatory phenotypes that can only be represented as a single scalar value per region (e.g., pausing index, for which this class is named).
 

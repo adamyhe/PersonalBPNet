@@ -1,6 +1,6 @@
 # Porting the original TensorFlow CLIPNET weights
 
-See [installation](installation.md) first — this requires the `tf` extra (`pip install "personalbpnet[tf]"` or `uv sync --extra tf`).
+See [the README](../README.md#install) for installation — this requires the `tf` extra (`uv add "personalbpnet[tf]"` or `pip install "personalbpnet[tf]"`).
 
 `CLIPNET_TF` is a faithful port of the original TensorFlow `rnn_v10` CLIPNET architecture to PyTorch — a genuinely different architecture from the [PyTorch `CLIPNET`](clipnet.md) (uses MaxPool, ELU, 1000 bp input → 500 bp output, two-hot encoded inputs). The `from_tf` class method loads hdf5 weights directly into a PyTorch module, without requiring TensorFlow to be installed.
 

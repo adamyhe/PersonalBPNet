@@ -1,6 +1,6 @@
 # ProCapNet
 
-See [installation](installation.md) first.
+See [the README](../README.md#install) for installation.
 
 `ProCapNet` is a subclass of `bpnetlite.bpnet.BPNet` that implements the masked profile loss from the [ProCapNet paper](https://www.biorxiv.org/content/10.1101/2024.05.28.596138v2). The masked loss allows specific positions (e.g., those overlapping peaks from other assays) to be excluded from the MNLL profile loss, which improves model attributions.
 

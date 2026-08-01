@@ -1,20 +1,6 @@
-# Installation
+# Contributing
 
-## As a dependency
-
-Install directly from GitHub with pip:
-
-```sh
-pip install git+https://github.com/adamyhe/personalbpnet.git
-```
-
-To load TensorFlow-trained weights (requires `h5py`), install with the `tf` optional dependency:
-
-```sh
-pip install "git+https://github.com/adamyhe/personalbpnet.git[tf]"
-```
-
-## Local development
+## Installing from source
 
 This repo uses [uv](https://docs.astral.sh/uv/) to manage the local development environment. After [installing uv](https://docs.astral.sh/uv/getting-started/installation/):
 
@@ -29,8 +15,14 @@ uv run python          # or drop into a Python shell with the package importable
 
 `uv sync` re-resolves and installs whenever `pyproject.toml` changes; run `uv lock` after adding or updating a dependency to refresh `uv.lock`.
 
-Run the test suite with:
+## Running tests
 
 ```sh
 uv run pytest
 ```
+
+CI (`.github/workflows/ci.yml`) runs this suite on every push and pull request, across every Python version listed in `pyproject.toml`'s classifiers. If you change the minimum/maximum supported Python version, verify the suite still passes under it first, e.g. `uv run --python 3.13 pytest`.
+
+## Releasing
+
+Version is defined solely in `pyproject.toml`. A release is a dated entry at the top of `CHANGELOG.md` (`## [x.y.z] - YYYY-MM-DD`) plus a version bump, tagged and published as a GitHub Release — `.github/workflows/publish.yml` then builds and publishes to PyPI automatically (gated on the full CI matrix passing).

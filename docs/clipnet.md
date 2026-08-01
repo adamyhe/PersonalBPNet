@@ -1,6 +1,6 @@
 # PersonalBPNet and CLIPNET
 
-See [installation](installation.md) first.
+See [the README](../README.md#install) for installation.
 
 ## PersonalBPNet
 

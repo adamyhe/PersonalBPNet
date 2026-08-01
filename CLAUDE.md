@@ -13,7 +13,7 @@ uv run clipnet -h             # run CLI commands inside the managed environment
 uv run python                 # or drop into a Python shell with the package importable
 ```
 
-Run `uv lock` after changing dependencies in `pyproject.toml` to refresh `uv.lock`. As a plain pip dependency (not for local dev), the package installs via `pip install git+https://github.com/adamyhe/personalbpnet.git`.
+Run `uv lock` after changing dependencies in `pyproject.toml` to refresh `uv.lock`. As a plain dependency (not for local dev), the package installs via `uv add personalbpnet` or `pip install personalbpnet` (PyPI) — see `CONTRIBUTING.md` for the from-source workflow above.
 
 Core dependencies: `bpnet-lite>=1.0.0`, `tangermeme>=1.0.0`, `pyfaidx`, `numba`. The `[tf]` extra installs `h5py`, required only for `CLIPNET_TF.from_tf()` (imported lazily inside that method, so the base install never requires `h5py`).
 
@@ -86,7 +86,9 @@ DataLoader batches are expected as tuples:
 
 ### Docs and publishing
 
-User-facing documentation lives in `docs/` (one file per model, plus `installation.md` and `cli.md`), with `README.md` kept as a short pointer/overview — add new user-facing content there, not in the README. `.github/workflows/publish.yml` builds and publishes to PyPI via `uv build`/`uv publish` (OIDC trusted publishing, no stored token) on GitHub Release; it calls `ci.yml` as a reusable workflow first (`workflow_call`) so a release can't publish without the full test matrix passing.
+User-facing documentation lives in `docs/` (one file per model, plus `cli.md`), with `README.md` kept as a short pointer/overview (install instructions live directly in the README, since they're the first thing a new user needs) — add new user-facing content to `docs/`, not the README. Installing from source / local development lives in `CONTRIBUTING.md`, not `docs/`. `.github/workflows/publish.yml` builds and publishes to PyPI via `uv build`/`uv publish` (OIDC trusted publishing, no stored token) on GitHub Release; it calls `ci.yml` as a reusable workflow first (`workflow_call`) so a release can't publish without the full test matrix passing.
+
+`CITATION.cff` (validated with `uvx cffconvert --validate -i CITATION.cff`) lists the BPNet, CLIPNET, and ProCapNet papers under `references`, alongside the software's own metadata — GitHub surfaces this automatically as a "Cite this repository" widget. Update it if the version, authors, or cited papers change.
 
 ### Checkpoint format
 

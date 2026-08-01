@@ -28,9 +28,10 @@
 - `.github/workflows/ci.yml`: runs the test suite on push/PR across Python 3.9–3.13 (all confirmed working; classifiers in `pyproject.toml` updated to include 3.13).
 - `.github/workflows/publish.yml`: builds and publishes to PyPI on GitHub Release via `uv build`/`uv publish` (OIDC trusted publishing, no stored token), gated on the full `ci.yml` test matrix passing.
 - `src/cli/_common.py`: shared argparse and ensemble-loading helpers, replacing ~300 lines of near-identical code duplicated across the three CLI entry points.
-- `uv.lock`, committed for reproducible local dev installs; see `docs/installation.md` for the `uv sync`/`uv run` workflow.
-- `docs/`: per-model usage docs (`clipnet.md`, `clipnet-tf.md`, `procapnet.md`, `pausenet.md`), plus `installation.md` and `cli.md`. `README.md` is now a short overview that links into these instead of holding all the code snippets itself.
+- `uv.lock`, committed for reproducible local dev installs; see `CONTRIBUTING.md` for the `uv sync`/`uv run` workflow.
+- `docs/`: per-model usage docs (`clipnet.md`, `clipnet-tf.md`, `procapnet.md`, `pausenet.md`), plus `cli.md`. `README.md` is now a short overview, with PyPI-based install instructions (`uv add`/`pip install personalbpnet`) directly in it; the from-source/local-dev workflow moved to the new `CONTRIBUTING.md`.
 - `pyproject.toml`: added `readme`, `keywords`, `classifiers`, and expanded `urls` (Repository/Issues/Changelog/Documentation) for proper PyPI metadata.
+- `CITATION.cff`: cites this software plus the BPNet, CLIPNET, and ProCapNet papers, so GitHub's "Cite this repository" widget and tools like `cffconvert` can surface them.
 
 ## [0.6.7] - 2026-02-23
 
