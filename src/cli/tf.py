@@ -6,9 +6,8 @@
 Wrapper script to calculate attributions and predictions for CLIPNET TensorFlow models
 """
 
-import argparse
-import os
 import random
+from argparse import ArgumentParser
 
 import numpy as np
 import pandas as pd
@@ -21,7 +20,16 @@ from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
 
-from .clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
+from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
+
+from ._common import (
+    add_attribute_args,
+    build_parent_parser,
+    load_ensemble,
+    resolve_device,
+    resolve_model_paths,
+    set_cpu_threads,
+)
 
 _help = """
 The following commands are available:
@@ -34,36 +42,7 @@ Planned but not implemented commands:
 
 
 def cli():
-    # DUMMY PARSER FOR COMMON PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    parser_parent = argparse.ArgumentParser(add_help=False)
-    parser_parent.add_argument(
-        "-f",
-        "--fa_fname",
-        type=str,
-        required=True,
-        help="Path to uncompressed fasta file.",
-    )
-    parser_parent.add_argument(
-        "-b",
-        "--bed_fname",
-        type=str,
-        required=True,
-        help="Path to bed file of regions to calculate predictions/attributions for.",
-    )
-    parser_parent.add_argument(
-        "-o", "--out_fname", type=str, required=True, help="Path to output npz file"
-    )
-    parser_parent.add_argument(
-        "-m",
-        "--model_fname",
-        type=str,
-        required=True,
-        help="Path to model directory or to specific model file to predict/attribute. "
-        "If a directory, loads and calculates average predictions/attributions across "
-        "all models in directory. If a specific model file, will only predict/attribute "
-        "that model. ",
-    )
+    parser_parent = build_parent_parser()
     parser_parent.add_argument(
         "--counts_head_only",
         action="store_true",
@@ -71,28 +50,8 @@ def cli():
         "used for 'PauseNet' models, which trim the profile head and fine-tune the just"
         "the counts head.",
     )
-    parser_parent.add_argument(
-        "-c",
-        "--chroms",
-        type=str,
-        nargs="+",
-        default=None,
-        help="Chromosomes to calculate attributions for. Defaults to all chromosomes.",
-    )
-    parser_parent.add_argument(
-        "-bs",
-        "--batch_size",
-        type=int,
-        default=16,
-        help="Batch size to control VRAM usage. Defaults to 16.",
-    )
-    parser_parent.add_argument(
-        "-v", "--verbose", action="store_true", help="Whether to print progress bars."
-    )
 
-    # MAIN PARSER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(
         help="The following commands are available:", required=True, dest="cmd"
     )
@@ -147,64 +106,19 @@ def cli():
         help="Calculate attributions for a given set of regions.",
         parents=[parser_parent],
     )
-    parser_attribute.add_argument(
-        "-a",
-        "--attribute_type",
-        type=str,
-        default="counts",
-        choices={"counts", "profile"},
-        help="The type of attribution to calculate.",
-    )
-    parser_attribute.add_argument(
-        "-s",
-        "--save_ohe",
-        type=str,
-        default=None,
-        help="Where to save OHE of sequences. Defaults to not saving. "
-        "Set this & hypothetical if you intend to use these attributions for "
-        "tfmodisco-lite.",
-    )
-    parser_attribute.add_argument(
-        "-y",
-        "--hypothetical",
-        action="store_true",
-        help="Whether to use hypothetical attributions. Defaults to False. "
-        "Set this & save_ohe if you intend to use these attributions for "
-        "tfmodisco-lite.",
-    )
-    parser_attribute.add_argument(
-        "-n",
-        "--n_shuffles",
-        type=int,
-        default=20,
-        help="Number of dinucleotide shuffles for DeepLIFT/SHAP. Defaults to 20.",
-    )
-    parser_attribute.add_argument(
-        "-r",
-        "--random_state",
-        type=int,
-        default=47,
-        help="Random seed. Defaults to 47.",
-    )
+    add_attribute_args(parser_attribute)
     args = parser.parse_args()
 
     # MAIN CODE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    if os.path.isdir(args.model_fname):
-        model_names = [
-            os.path.join(args.model_fname, f"fold_{i}.h5") for i in range(1, 10)
-        ]
-    else:
-        model_names = [args.model_fname]
+    model_paths = resolve_model_paths(args.model_fname, pattern="fold_{i}.h5")
+    set_cpu_threads()
+    device = resolve_device()
 
-    # Set number of threads to max of available
-    if not torch.cuda.is_available():
-        if "SLURM_CPUS_PER_TASK" in os.environ:
-            n = min(int(os.environ["SLURM_CPUS_PER_TASK"]), os.cpu_count())
-        else:
-            n = os.cpu_count()
-        torch.set_num_threads(n)
-        torch.set_num_interop_threads(n)
+    def _load_tf_model(f):
+        return TwoHotToOneHot(
+            CLIPNET_TF.from_tf(f, counts_head_only=args.counts_head_only)
+        )
 
     if args.cmd == "predict":
         # Load data
@@ -224,30 +138,16 @@ def cli():
             X = data
 
         counts = []
-        if not args.counts_head_only:
-            profiles = []
-
-        for f in model_names:
-            # Load model inside of for loop to prevent VRAM leak
-            model = TwoHotToOneHot(
-                CLIPNET_TF.from_tf(f, counts_head_only=args.counts_head_only)
-            )
-            # Calculate and log predictions
+        profiles = []
+        for model in load_ensemble(model_paths, _load_tf_model):
             pred = predict(
-                model,
-                X,
-                batch_size=args.batch_size,
-                verbose=args.verbose,
-                device="cuda" if torch.cuda.is_available() else "cpu",
+                model, X, batch_size=args.batch_size, verbose=args.verbose, device=device
             )
             if args.counts_head_only:
                 counts.append(pred)
             else:
                 profiles.append(pred[0])
                 counts.append(pred[1])
-            # clear VRAM
-            del model
-            torch.cuda.empty_cache()
 
         # Average predictions
         count = torch.mean(torch.stack(counts), dim=0)
@@ -369,23 +269,12 @@ def cli():
         signals = torch.abs(torch.stack(signals_jitter))
 
         # Calculate predictions
-        profiles = []
-        for f in model_names:
-            # Load model inside of for loop to prevent VRAM leak
-            model = TwoHotToOneHot(CLIPNET_TF.from_tf(f))
-            # Calculate and log predictions
-            profiles.append(
-                predict(
-                    model,
-                    X,
-                    batch_size=args.batch_size,
-                    verbose=args.verbose,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
-                )[0]
-            )
-            # clear VRAM
-            del model
-            torch.cuda.empty_cache()
+        profiles = [
+            predict(
+                model, X, batch_size=args.batch_size, verbose=args.verbose, device=device
+            )[0]
+            for model in load_ensemble(model_paths, _load_tf_model)
+        ]
 
         # Average predictions
         profile = torch.mean(torch.stack(profiles), dim=0)
@@ -419,26 +308,16 @@ def cli():
             np.savez_compressed(args.save_ohe, X.to(int).numpy())
 
         attributions = []
-        for f in model_names:
-            # Load model inside of for loop to prevent VRAM leak
-            model = TwoHotToOneHot(
-                CLIPNET_TF.from_tf(f, counts_head_only=args.counts_head_only)
-            )
+        for model in load_ensemble(model_paths, _load_tf_model):
             additional_nonlinear_ops = None
             # Wrap models depending on args.attribute_type
             if args.counts_head_only:
                 pass
-            else:
-                if args.attribute_type not in ["counts", "profile"]:
-                    raise ValueError(
-                        f"Unknown attribute_type: {args.attribute_type}."
-                        "Must be one of ['counts', 'profile']"
-                    )
-                elif args.attribute_type == "counts":
-                    model = CountWrapper(model)
-                elif args.attribute_type == "profile":
-                    model = ProfileWrapper(model)
-                    additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
+            elif args.attribute_type == "counts":
+                model = CountWrapper(model)
+            elif args.attribute_type == "profile":
+                model = ProfileWrapper(model)
+                additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
 
             # Calculate and log attributions
             attributions.append(
@@ -451,12 +330,9 @@ def cli():
                     random_state=args.random_state,
                     verbose=args.verbose,
                     additional_nonlinear_ops=additional_nonlinear_ops,
-                    device="cuda" if torch.cuda.is_available() else "cpu",
+                    device=device,
                 ).numpy()
             )
-            # clear VRAM
-            del model
-            torch.cuda.empty_cache()
 
         # Save
         np.savez_compressed(args.out_fname, np.stack(attributions).mean(axis=0))

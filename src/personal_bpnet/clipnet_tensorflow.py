@@ -5,7 +5,6 @@
 A class for importing CLIPNET models trained in TensorFlow into PyTorch.
 """
 
-import h5py
 import torch
 
 
@@ -230,6 +229,8 @@ class CLIPNET_TF(torch.nn.Module):
         model: CLIPNET_TF
                 A CLIPNET tensorflow model compatible with this repository in PyTorch.
         """
+        import h5py
+
         h5 = h5py.File(filename, "r")
         w = h5["model_weights"]
         k, b, mm, mv = "kernel:0", "bias:0", "moving_mean:0", "moving_variance:0"
