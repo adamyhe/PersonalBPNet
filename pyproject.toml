@@ -4,21 +4,52 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PersonalBPNet"
-version = "0.6.7"
-description = "A small modification to bpnetlite's BPNet to accomodate large validation datasets."
+version = "0.7.0"
+description = "PyTorch BPNet-family models (CLIPNET, ProCapNet, PauseNet) for base-resolution genomic signal prediction, extending bpnetlite."
+readme = "README.md"
 authors = [{ name = "Adam He", email = "adamyhe@gmail.com" }]
 license = { file = "LICENSE" }
-urls = { homepage = "https://github.com/adamyhe/PersonalBPNet" }
+keywords = [
+    "genomics",
+    "deep-learning",
+    "pytorch",
+    "bpnet",
+    "clipnet",
+    "pro-cap",
+    "regulatory-genomics",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+urls = { Homepage = "https://github.com/adamyhe/PersonalBPNet", Repository = "https://github.com/adamyhe/PersonalBPNet", Issues = "https://github.com/adamyhe/PersonalBPNet/issues", Changelog = "https://github.com/adamyhe/PersonalBPNet/blob/main/CHANGELOG.md", Documentation = "https://github.com/adamyhe/PersonalBPNet/tree/main/docs" }
 requires-python = ">= 3.9"
-dependencies = ["bpnet-lite>=1.0.0", "tangermeme>=1.0.0", "pyfastx"]
+dependencies = ["bpnet-lite>=1.0.0", "tangermeme>=1.0.0", "pyfaidx", "numba"]
 
 [project.optional-dependencies]
 tf = ["h5py"]
 
-[tool.setuptools]
-packages = ["personal_bpnet"]
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.scripts]
-clipnet = "personal_bpnet.cli_clipnet:cli"
-pausenet = "personal_bpnet.cli_pausenet:cli"
-clipnet_tf = "personal_bpnet.cli_tf:cli"
+clipnet = "cli.clipnet:cli"
+pausenet = "cli.pausenet:cli"
+clipnet_tf = "cli.tf:cli"

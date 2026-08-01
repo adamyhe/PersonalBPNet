@@ -1,0 +1,88 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it using the metadata below. If you
+  use the CLIPNET or ProCapNet models specifically, or the underlying BPNet
+  architecture (via the bpnet-lite dependency), please also cite the
+  corresponding paper listed under "references".
+title: PersonalBPNet
+type: software
+authors:
+  - family-names: He
+    given-names: Adam Y.
+    email: adamyhe@gmail.com
+repository-code: "https://github.com/adamyhe/PersonalBPNet"
+license: MIT
+version: 0.7.0
+references:
+  - type: article
+    title: Base-resolution models of transcription-factor binding reveal soft motif syntax
+    authors:
+      - family-names: Avsec
+        given-names: Žiga
+      - family-names: Weilert
+        given-names: Melanie
+      - family-names: Shrikumar
+        given-names: Avanti
+      - family-names: Krueger
+        given-names: Sabrina
+      - family-names: Alexandari
+        given-names: Amr
+      - family-names: Dalal
+        given-names: Khyati
+      - family-names: Fropf
+        given-names: Robin
+      - family-names: McAnany
+        given-names: Charles
+      - family-names: Gagneur
+        given-names: Julien
+      - family-names: Kundaje
+        given-names: Anshul
+      - family-names: Zeitlinger
+        given-names: Julia
+    year: 2021
+    doi: 10.1038/s41588-021-00782-6
+    url: "https://doi.org/10.1038/s41588-021-00782-6"
+    journal: Nature Genetics
+    volume: "53"
+    issue: "3"
+    start: "354"
+    end: "366"
+    notes: >-
+      Introduces BPNet, the base architecture extended by this package (via
+      the bpnet-lite dependency).
+  - type: article
+    title: >-
+      Dissection of core promoter syntax through single nucleotide
+      resolution modeling of transcription initiation
+    authors:
+      - family-names: He
+        given-names: Adam Y.
+      - family-names: Danko
+        given-names: Charles G.
+    year: 2024
+    doi: 10.1101/2024.03.13.583868
+    url: "https://www.biorxiv.org/content/10.1101/2024.03.13.583868"
+    journal: bioRxiv
+    notes: Introduces CLIPNET.
+  - type: article
+    title: >-
+      Dissecting the cis-regulatory syntax of transcription initiation with
+      deep learning
+    authors:
+      - family-names: Cochran
+        given-names: K.
+      - family-names: Yin
+        given-names: M.
+      - family-names: Mantripragada
+        given-names: A.
+      - family-names: Schreiber
+        given-names: J.
+      - family-names: Marinov
+        given-names: G. K.
+      - family-names: Kundaje
+        given-names: Anshul
+    year: 2024
+    doi: 10.1101/2024.05.28.596138
+    url: "https://www.biorxiv.org/content/10.1101/2024.05.28.596138"
+    journal: bioRxiv
+    notes: Introduces ProCapNet.
