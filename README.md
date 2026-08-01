@@ -1,5 +1,9 @@
 # PersonalBPNet
 
+[![PyPI](https://img.shields.io/pypi/v/personalbpnet.svg)](https://pypi.org/project/personalbpnet/)
+[![CI](https://github.com/adamyhe/PersonalBPNet/actions/workflows/ci.yml/badge.svg)](https://github.com/adamyhe/PersonalBPNet/actions/workflows/ci.yml)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/personalbpnet?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/personalbpnet)
+
 A PyTorch library of [BPNet](https://github.com/jmschrei/bpnet-lite)-family models for predicting base-resolution genomic signal (e.g., PRO-cap read coverage) from DNA sequence, plus CLI tools for prediction and attribution.
 
 - **PersonalBPNet** — `bpnetlite.bpnet.BPNet`, with a `fit()` that validates against a PyTorch `DataLoader` instead of holding the whole validation set in memory.
