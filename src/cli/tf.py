@@ -20,6 +20,7 @@ from tangermeme.predict import predict
 
 from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
 from personal_bpnet.clipnet_tf_fast import deep_lift_shap as fast_deep_lift_shap
+from personal_bpnet.clipnet_tf_fast import saturation_mutagenesis
 
 from ._common import (
     add_attribute_args,
@@ -35,6 +36,7 @@ The following commands are available:
     predict         Calculate predictions for a CLIPNET model
     predict_tss     Calculate TSS predictions (uses aggressive jittering).
     attribute       Calculate DeepLIFT/SHAP attributions for a CLIPNET model
+    ism             Calculate in silico saturation mutagenesis for a CLIPNET model
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
 """
@@ -137,6 +139,69 @@ def cli():
         "'rescale' applies the elementwise rescale rule to the whole product, which "
         "reproduces attributions from personalbpnet <= 0.7.0.",
     )
+    # ISM PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    ism_parent = _parent_parser()
+    for action in ism_parent._actions:
+        if action.dest == "batch_size":
+            action.default = 1024
+            action.help = (
+                "Edited sequences per step, approximately (the edits at a few "
+                "consecutive positions of up to batch_size / 24 regions). "
+                "Defaults to 1024."
+            )
+    parser_ism = subparsers.add_parser(
+        "ism",
+        help="Calculate in silico saturation mutagenesis for a given set of regions.",
+        parents=[ism_parent],
+    )
+    parser_ism.add_argument(
+        "-a",
+        "--output",
+        type=str,
+        default="counts",
+        choices=("counts", "profile", "both"),
+        help="Which predictions to mutagenize. 'counts' (default) and 'profile' "
+        "save tangermeme-style ISM attributions (each substitution's change in "
+        "prediction, centered across bases and averaged over the output); 'both' "
+        "needs --raw_outputs.",
+    )
+    parser_ism.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="First position of the 1000 bp window to substitute. Defaults to 0.",
+    )
+    parser_ism.add_argument(
+        "--end",
+        type=int,
+        default=-1,
+        help="Position after the last to substitute (-1: the end of the window). "
+        "Defaults to -1.",
+    )
+    parser_ism.add_argument(
+        "--raw_outputs",
+        action="store_true",
+        help="Save the predictions for the reference (y0) and for every "
+        "substitution (y_hat, shape (n, 4, end - start, n_outputs)) instead of "
+        "attributions. Profile predictions take ~16 MB per region for a full "
+        "window.",
+    )
+    parser_ism.add_argument(
+        "-y",
+        "--hypothetical",
+        action="store_true",
+        help="Save the attribution of every base at every position instead of "
+        "only the observed base's.",
+    )
+    parser_ism.add_argument(
+        "-s",
+        "--save_ohe",
+        type=str,
+        default=None,
+        help="Where to save the one-hot encoded sequences. Defaults to not saving.",
+    )
+
     args = parser.parse_args()
 
     # MAIN CODE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -361,6 +426,61 @@ def cli():
 
         # Save
         np.savez_compressed(args.out_fname, np.stack(attributions).mean(axis=0))
+
+    elif args.cmd == "ism":
+        if args.counts_head_only and args.output != "counts":
+            raise ValueError("Counts head only models only support --output counts.")
+        if args.output == "both" and not args.raw_outputs:
+            raise ValueError("--output both needs --raw_outputs.")
+        X = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            chroms=args.chroms,
+            in_window=1000,
+            verbose=args.verbose,
+            ignore=list("QWERYUIOPSDFHJKLZXVBNM"),
+        ).to(torch.float)
+        if args.save_ohe is not None:
+            np.savez_compressed(args.save_ohe, X.to(int).numpy())
+
+        # Ensemble by averaging across replicates as we go (a full-window profile
+        # ISM is ~16 MB per region per replicate). ISM attributions are linear in
+        # the predictions, so averaging them equals the attributions of the
+        # averaged predictions.
+        total, n_models = None, 0
+        for model in load_ensemble(model_paths, _load_tf_model):
+            out = saturation_mutagenesis(
+                model,
+                X,
+                start=args.start,
+                end=args.end,
+                output=args.output,
+                raw_outputs=args.raw_outputs,
+                hypothetical=args.hypothetical,
+                batch_size=args.batch_size,
+                device=device,
+                verbose=args.verbose,
+            )
+            flat = []
+            for o in out if args.raw_outputs else [out]:
+                flat.extend(o if isinstance(o, list) else [o])
+            total = flat if total is None else [t + f for t, f in zip(total, flat)]
+            n_models += 1
+        mean = [(t / n_models).numpy() for t in total]
+
+        if not args.raw_outputs:
+            np.savez_compressed(args.out_fname, mean[0])
+        elif args.output == "both":
+            y0_profile, y0_counts, y_hat_profile, y_hat_counts = mean
+            np.savez_compressed(
+                args.out_fname,
+                y0_profile=y0_profile,
+                y0_counts=y0_counts,
+                y_hat_profile=y_hat_profile,
+                y_hat_counts=y_hat_counts,
+            )
+        else:
+            np.savez_compressed(args.out_fname, y0=mean[0], y_hat=mean[1])
 
     else:
         raise ValueError(_help)

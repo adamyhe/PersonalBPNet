@@ -24,6 +24,7 @@ clipnet predict -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet predict_tss -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/ -a counts
 clipnet_tf ...   # same interface, for TF-ported models
+clipnet_tf ism -f genome.fa -b regions.bed -o out.npz -m model_dir/ -a counts   # TF-only: incremental ISM
 
 pausenet predict -f genome.fa -b regions.bed -o out.npz -m model.torch
 pausenet attribute -f genome.fa -b regions.bed -o out.npz -m model.torch
@@ -33,7 +34,7 @@ Model directories are expected to contain files named `f1.torch` through `f9.tor
 
 ### CLI implementation pattern
 
-`src/cli/clipnet.py`, `src/cli/pausenet.py`, and `src/cli/tf.py` each define a single `cli()` function using `argparse` subparsers (`predict`, `predict_tss`, `attribute`). Shared scaffolding lives in `src/cli/_common.py`:
+`src/cli/clipnet.py`, `src/cli/pausenet.py`, and `src/cli/tf.py` each define a single `cli()` function using `argparse` subparsers (`predict`, `predict_tss`, `attribute`; `tf.py` also has `ism`). Shared scaffolding lives in `src/cli/_common.py`:
 - `build_parent_parser()` / `add_shape_args()` / `add_attribute_args()` — the common `-f/-b/-o/-m/-c/-bs/-v`, `--in_window/--out_window/--n_filters/--n_layers`, and `-a/-s/-y/-n/-r` argparse groups, reused across subcommands and CLIs.
 - `resolve_model_paths()` — expands a model directory into its `f1.torch..f9.torch` (or `fold_{i}.h5` for the TF CLI) replicate paths, or passes through a single file.
 - `load_ensemble()` / `load_torch_model()` — a generator that loads one replicate at a time (freeing it before the next is loaded, to avoid VRAM buildup) and handles the "bare state dict vs. full serialized module" checkpoint ambiguity.

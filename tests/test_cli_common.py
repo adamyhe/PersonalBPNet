@@ -75,8 +75,9 @@ class TestAverageProfileAndCounts:
 
 
 def test_clipnet_tf_batch_size_defaults(monkeypatch):
-    """`clipnet_tf attribute` leaves -bs to the fast engine's planner (None);
-    the other subcommands keep the shared default of 16."""
+    """`clipnet_tf attribute` leaves -bs to the fast engine's planner (None),
+    `ism` defaults to 1024 edits a step, and the other subcommands keep the
+    shared default of 16."""
 
     import argparse
     import sys
@@ -98,6 +99,7 @@ def test_clipnet_tf_batch_size_defaults(monkeypatch):
         (["predict"], 16),
         (["predict_tss"], 16),
         (["attribute", "-bs", "4"], 4),
+        (["ism"], 1024),
     ]:
         monkeypatch.setattr(sys, "argv", ["clipnet_tf", *argv, *required])
         try:

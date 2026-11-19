@@ -1,6 +1,6 @@
 # Command line interface
 
-See [the README](../README.md#install) for installation. Three CLI entry points are installed: `clipnet`, `pausenet`, and `clipnet_tf` (for TensorFlow-ported models — requires the `tf` extra). Each takes a `predict`, `predict_tss`, or `attribute` subcommand (`clipnet_tf` and `clipnet` support all three; `pausenet` supports `predict`/`attribute`, since TSS prediction doesn't apply to scalar phenotypes).
+See [the README](../README.md#install) for installation. Three CLI entry points are installed: `clipnet`, `pausenet`, and `clipnet_tf` (for TensorFlow-ported models — requires the `tf` extra). Each takes a `predict`, `predict_tss`, or `attribute` subcommand (`clipnet_tf` and `clipnet` support all three; `pausenet` supports `predict`/`attribute`, since TSS prediction doesn't apply to scalar phenotypes). `clipnet_tf` also has `ism`.
 
 Every subcommand of every CLI accepts:
 
@@ -46,6 +46,7 @@ Same shape as `clipnet`, but for [PauseNet](pausenet.md)'s single-scalar-per-loc
 ```sh
 clipnet_tf predict -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/
+clipnet_tf ism -f genome.fa -b regions.bed -o out.npz -m model_dir/
 ```
 
 For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are expected to contain `fold_1.h5`..`fold_9.h5`. Input/output windows are fixed at 1000/500 bp (the original architecture's shape), so there are no `--in_window`/`--n_filters`/etc. flags. Pass `--counts_head_only` for counts-only ("PauseNet"-style) TF models.
@@ -54,3 +55,10 @@ For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are 
 
 - `-bs/--batch_size` is the number of *sequences* per step, each with all of its `-n` references (tangermeme's `batch_size` counts sequence–reference pairs). By default the engine picks the smallest step that saturates the GPU (16 on a TITAN X, scaled by SM count on larger GPUs) if it fits in half the free memory. Memory grows ~70 MiB per sequence at 20 shuffles. A step that runs out of memory is retried at half the size.
 - `-a profile` uses tangermeme's (≥ 1.5) softmax and midpoint product rules for the profile summary `sum(c * softmax(c))`. Up to version 0.7.0 it applied the elementwise rescale rule to the whole product, which does not fit a softmax (it couples every position, so the attributions don't exactly sum to the change in prediction). Pass `--profile_rule rescale` to reproduce those older attributions.
+
+`clipnet_tf ism` runs in silico saturation mutagenesis with the incremental (fastISM) engine. It returns the same predictions as tangermeme's `saturation_mutagenesis`, 2–2.3x faster on a GPU. Predictions are averaged across the ensemble.
+
+- `-a/--output`: `counts` (default) or `profile`. Each saves tangermeme-style ISM attributions of shape `(n, 4, end - start)`: each substitution's change in prediction, centered across the four bases at each position and averaged over the output. These are multiplied by the observed sequence unless `-y/--hypothetical` is given. `both` needs `--raw_outputs`.
+- `--raw_outputs` saves the predictions instead: `y0` (reference) and `y_hat` (`(n, 4, end - start, n_outputs)`, every substitution), or `y0_profile`/`y0_counts`/`y_hat_profile`/`y_hat_counts` for `-a both`. Profile predictions for a full window take ~16 MB per region.
+- `--start`/`--end` restrict the substituted positions within the 1000 bp window (default: all of them).
+- `-bs/--batch_size` is the number of edited sequences per step (default 1024), and `-s/--save_ohe` saves the one-hot sequences.
