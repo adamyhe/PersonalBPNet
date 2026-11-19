@@ -66,6 +66,17 @@ positions. A step takes a few positions of many sequences, to keep windows
 narrow and batches large, and every window has the same width wherever the
 edit is (shifted inward at the sequence ends rather than clipped), since
 cuDNN's first call at each new shape costs far more than the call itself.
+
+The ceiling is lower than for longer-input models: the last three residual
+layers and the profile dense layer run at full width, so a windowed step
+still does ~45% of a full forward's multiply-adds (~33% for the counts
+alone). With only 64 channels, the convolutions are cheap enough that
+elementwise work matters as much, so the ISM forward folds every eval-mode
+BatchNorm (and the TwoHotToOneHot scale) into the affine layer next to it
+(`_fold`), caches each residual layer's input already zero-padded (a window's
+conv input is then one slice of it), and fuses each residual epilogue into one
+kernel (`_res_out`). These change the predictions only by float rounding
+(~3e-7 relative in float32).
 """
 
 import contextlib
@@ -107,6 +118,24 @@ def _eval_mode(m):
         yield
     finally:
         m.train(training)
+
+
+@contextlib.contextmanager
+def _tf32(enabled):
+    """Run with TF32 convolutions and matmuls on or off, restoring the previous
+    settings afterwards. On Ampere and newer GPUs, PyTorch runs cuDNN
+    convolutions in TF32 by default (10-bit mantissa). That noise is about the
+    size of a single substitution's effect, so it swamps float32 ISM (30-50%
+    error against float64 with random weights, and batch-size dependent) and
+    adds ~1% to DeepLIFT/SHAP. Turning it off costs little for this model."""
+
+    cudnn, matmul = torch.backends.cudnn, torch.backends.cuda.matmul
+    previous = cudnn.allow_tf32, matmul.allow_tf32
+    cudnn.allow_tf32 = matmul.allow_tf32 = bool(enabled)
+    try:
+        yield
+    finally:
+        cudnn.allow_tf32, matmul.allow_tf32 = previous
 
 
 def _bn_scale(bn):
@@ -246,17 +275,17 @@ def _resolve_compile(compile, device):
     return "compile" if compile else "script"
 
 
-def _fused(fn, mode="script"):
+def _fused(fn, mode="script", dynamic=False):
     """`fn` fused: by torch.compile (mode="compile"; static shapes, which the
     callers keep constant, and one compile per distinct shape) or TorchScript
     (mode="script"; fused on CUDA after a couple of calls). If TorchScript
     cannot script `fn`, `fn` itself. TorchScript is deprecated in recent torch
     and warns; the warning is silenced since nothing else here uses it."""
 
-    key = (fn, mode)
+    key = (fn, mode, dynamic)
     if key not in _FUSED:
         if mode == "compile":
-            _FUSED[key] = torch.compile(fn, dynamic=False, fullgraph=True)
+            _FUSED[key] = torch.compile(fn, dynamic=dynamic, fullgraph=True)
         else:
             try:
                 with warnings.catch_warnings():
@@ -549,6 +578,7 @@ def deep_lift_shap(
     verbose=False,
     profile_rule="product",
     compile=None,
+    tf32=False,
 ):
     """DeepLIFT/SHAP attributions of a CLIPNET_TF model's counts or profile.
 
@@ -609,6 +639,14 @@ def deep_lift_shap(
         such as Pascal). True forces torch.compile (on the CPU, Inductor's C++
         backend), False TorchScript. torch.compile compiles once per distinct
         shape on the first call, which takes seconds to a minute.
+    tf32: bool
+        Allow TF32 convolutions and matmuls on GPUs that support them (Ampere
+        and newer), for the duration of the call. Default False (full float32):
+        TF32's rounding noise is comparable to single-base effects, so it
+        degrades ISM badly and DeepLIFT/SHAP slightly. It may be faster on
+        server GPUs with high TF32 throughput; it has no effect on float64
+        inputs or on older GPUs. The previous global settings are restored on
+        return.
 
     Returns
     -------
@@ -617,7 +655,7 @@ def deep_lift_shap(
     """
 
     m, in_scale = _unwrap(model)
-    with _eval_mode(m):
+    with _eval_mode(m), _tf32(tf32):
         return _deep_lift_shap(
             m, in_scale, X, target, references, n_shuffles, random_state,
             batch_size, hypothetical, warning_threshold, return_deltas, device,
@@ -750,21 +788,74 @@ def _default_batch_size(m, K, L, device, dtype):
 # ================================================== incremental (fastISM) ISM
 
 
-def _reference_cache(m, x):
-    """A full forward of reference rows x (n, 4, L), already scaled to the
-    model's input encoding, keeping every layer that a windowed recompute
-    reads: the stem pool's output p0, the input of every residual layer, the
+def _fold(m, in_scale):
+    """The ISM forward's parameters, with every eval-mode BatchNorm folded into
+    the affine layer next to it, so that each is one op instead of two: the
+    input BatchNorm (and the TwoHotToOneHot input scale) into iconv (exact:
+    iconv has no padding, so the BatchNorm's shift reaches every output
+    through the whole kernel), and the BatchNorm after iconv, sconv, each
+    residual conv and the two dense layers into that layer. The skip
+    BatchNorms follow a residual add, so they stay as a per-channel scale and
+    shift for `_res_out`. Equal to the model up to floating-point rounding."""
+
+    def after(w, b, bn):  # BatchNorm(affine(x)) as one affine layer
+        s = _bn_scale(bn)
+        return w * s.view(-1, *[1] * (w.dim() - 1)), (b - bn.running_mean) * s + bn.bias
+
+    s_in = _bn_scale(m.ibnorm)
+    t_in = m.ibnorm.bias - m.ibnorm.running_mean * s_in
+    w = m.iconv.weight
+    f = {
+        "iconv": after(w * (s_in * in_scale)[None, :, None],
+                       m.iconv.bias + (w * t_in[None, :, None]).sum((1, 2)), m.ibn),
+        "sconv": after(m.sconv.weight, m.sconv.bias, m.sbnorm),
+        "rconv": (m.rconv.weight, m.rconv.bias),
+        "res": [after(c.weight, c.bias, bn) for c, bn in zip(m.rconvs, m.rbnorms)],
+        "skip": [],
+        "dil": [_same_pad(p) for p in m.rpads],
+        "clinear": after(m.clinear.weight, m.clinear.bias, m.cbnorm),
+    }
+    for bn in m.skipbnorms:
+        sc = _bn_scale(bn)
+        f["skip"].append((sc[:, None], (bn.bias - bn.running_mean * sc)[:, None]))
+    if not m.counts_head_only:
+        f["plinear"] = after(m.plinear.weight, m.plinear.bias, m.pbnorm)
+    return f
+
+
+def _res_out(h, c, s, t):
+    """A residual layer's output: skip BatchNorm (scale s, shift t) and ReLU of
+    its input h plus the ReLU of its conv's (BatchNorm-folded) output c."""
+
+    return torch.relu((h + torch.relu(c)) * s + t)
+
+
+def _stem(f, x):
+    """iconv (+ folded BatchNorms), ELU and the stem pool on one-hot rows x."""
+
+    return F.max_pool1d(F.elu(F.conv1d(x, *f["iconv"])), 2)
+
+
+def _mid(f, p0):
+    """sconv (+ folded BatchNorm), ReLU, the second pool and the 1x1 rconv."""
+
+    return F.conv1d(F.max_pool1d(torch.relu(F.conv1d(p0, *f["sconv"])), 2), *f["rconv"])
+
+
+def _reference_cache(m, f, x, res_out):
+    """A full forward of one-hot reference rows x (n, 4, L), keeping every
+    layer that a windowed recompute reads: the stem pool's output p0, the
+    input of every residual layer zero-padded by its dilation (its conv's
+    'same' padding, so that a window's conv input is one slice of it), the
     residual stack's output, and the final pool's output q."""
 
-    e0 = m.irelu(m.ibn(m.iconv(m.ibnorm(m.input(x)))))
-    p0 = m.imp(e0)
-    h = m.rconv(m.smp(m.srelu(m.sbnorm(m.sconv(p0)))))
-    hs = [h]
-    for i in range(m.n_layers):
-        c = m.rrelus[i](m.rbnorms[i](m.rconvs[i](m.rpads[i](h))))
-        h = m.skiprelus[i](m.skipbnorms[i](torch.add(h, c)))
-        hs.append(h)
-    return {"p0": p0, "h": hs, "q": m.skipmp(h)}
+    p0 = _stem(f, x)
+    h = _mid(f, p0)
+    hp = []
+    for i, d in enumerate(f["dil"]):
+        hp.append(F.pad(h, (d, d)))
+        h = res_out(h, F.conv1d(hp[-1], *f["res"][i], dilation=d), *f["skip"][i])
+    return {"p0": p0, "hp": hp, "h": h, "q": F.max_pool1d(h, 2)}
 
 
 def _splice(ref, a, b, alt, lo, hi, seq):
@@ -785,15 +876,15 @@ def _pooled_span(lo, hi, n_out):
     return lo // 2, min(n_out, (hi + 1) // 2)
 
 
-def _head(m, q, profile=True):
+def _head(m, f, q, profile=True):
     """The model's heads on the final pool's output q (B, C, Lo); the profile
     (the costliest layer at this point) is None if not `profile`."""
 
-    y_counts = m.crelu(m.cbnorm(m.clinear(m.cavgpool(q).squeeze(-1))))
+    y_counts = torch.relu(F.linear(q.mean(dim=-1), *f["clinear"]))
     if m.counts_head_only or not profile:
         return None, y_counts
     flat = q.permute(0, 2, 1).reshape(q.shape[0], -1)
-    return m.prelu(m.pbnorm(m.plinear(flat))), y_counts
+    return torch.relu(F.linear(flat, *f["plinear"])), y_counts
 
 
 def _widen(lo, hi, width, n):
@@ -836,44 +927,38 @@ def _spans(m, L, lo, hi, widths=None):
     return spans
 
 
-def _window_forward(m, cache, x_alt, seq, spans, profile=True):
-    """The model's outputs (profile or None, counts) for rows x_alt (B, 4, L),
-    in the model's input encoding, each equal to the cached reference of its
-    sequence `seq` (B,) outside the input positions an edit's `_spans` were
-    computed for. Only those windows of each layer are computed; the rest is
-    read from `cache`."""
+def _window_forward(m, f, cache, x_alt, seq, spans, res_out, profile=True):
+    """The model's outputs (profile or None, counts) for one-hot rows x_alt
+    (B, 4, L), each equal to the cached reference of its sequence `seq` (B,)
+    outside the input positions an edit's `_spans` were computed for. Only
+    those windows of each layer are computed; the rest is read from `cache`."""
 
     k0, k1 = m.iconv.kernel_size[0], m.sconv.kernel_size[0]
     (plo, phi), (qlo, qhi) = spans[0], spans[1]
 
     # Stem: iconv, ELU and pool over the stem pool's window.
-    e = m.ibnorm(x_alt[..., 2 * plo : 2 * phi + k0 - 1])
-    p0 = m.imp(m.irelu(m.ibn(m.iconv(e))))
+    p0 = _stem(f, x_alt[..., 2 * plo : 2 * phi + k0 - 1])
 
     # sconv, ReLU and pool over the second pool's window.
     seg = _splice(cache["p0"], 2 * qlo, 2 * qhi + k1 - 1, p0, plo, phi, seq)
-    h = m.rconv(m.smp(m.srelu(m.sbnorm(m.sconv(seg)))))
+    h = _mid(f, seg)
     lo, hi = qlo, qhi
 
-    # Dilated residual layers, each reading its input (zero-padded at the true
-    # sequence ends, as AsymmetricPad pads it) d positions beyond its window.
-    n = cache["h"][0].shape[-1]
-    for i in range(m.n_layers):
-        d = _same_pad(m.rpads[i])
+    # Dilated residual layers. Output window [olo, ohi) reads its input over
+    # [olo - d, ohi + d), which in the cached input, padded by d (the conv's
+    # zero padding at the true sequence ends), is [olo, ohi + 2d).
+    for i, d in enumerate(f["dil"]):
         olo, ohi = spans[2 + i]
-        a, b = max(0, olo - d), min(n, ohi + d)
-        seg = _splice(cache["h"][i], a, b, h, lo, hi, seq)
-        conv_in = F.pad(seg, (a - (olo - d), (ohi + d) - b))
-        c = m.rrelus[i](m.rbnorms[i](m.rconvs[i](conv_in)))
-        h_in = seg[..., olo - a : ohi - a]
-        h = m.skiprelus[i](m.skipbnorms[i](torch.add(h_in, c)))
+        seg = _splice(cache["hp"][i], olo, ohi + 2 * d, h, lo + d, hi + d, seq)
+        c = F.conv1d(seg, *f["res"][i], dilation=d)
+        h = res_out(seg[..., d : d + ohi - olo], c, *f["skip"][i])
         lo, hi = olo, ohi
 
     # Final pool, then the heads at full width (spliced into the cached q).
     mlo, mhi = spans[-1]
-    seg = _splice(cache["h"][-1], 2 * mlo, 2 * mhi, h, lo, hi, seq)
-    q = _splice(cache["q"], 0, cache["q"].shape[-1], m.skipmp(seg), mlo, mhi, seq)
-    return _head(m, q, profile)
+    seg = _splice(cache["h"], 2 * mlo, 2 * mhi, h, lo, hi, seq)
+    q = _splice(cache["q"], 0, cache["q"].shape[-1], F.max_pool1d(seg, 2), mlo, mhi, seq)
+    return _head(m, f, q, profile)
 
 
 @torch.no_grad()
@@ -888,6 +973,8 @@ def saturation_mutagenesis(
     batch_size=1024,
     device=None,
     verbose=False,
+    tf32=False,
+    compile=None,
 ):
     """In silico saturation mutagenesis of a CLIPNET_TF model, incrementally.
 
@@ -897,7 +984,9 @@ def saturation_mutagenesis(
     `raw_outputs=True` (output="both"): every single-base substitution in
     [start, end) of each sequence is predicted, the substitutions that
     re-apply the base already present are skipped and filled from the
-    reference prediction, as tangermeme does. Instead of running every edited
+    reference prediction, as tangermeme does. The attributions for
+    output="profile" are not averaged over the profile's positions (see
+    Returns). Instead of running every edited
     sequence through the whole model, each reference is run once with its
     layers cached, and each block of consecutive substituted positions
     recomputes only the window of each layer those positions can change (see
@@ -930,12 +1019,32 @@ def saturation_mutagenesis(
         Default: CUDA if available, else the CPU.
     verbose: bool
         Show a progress bar over groups of sequences. Default False.
+    tf32: bool
+        Allow TF32 convolutions and matmuls on GPUs that support them (Ampere
+        and newer), for the duration of the call. Default False (full float32):
+        TF32's rounding noise is comparable to single-base effects, so it
+        degrades ISM badly and DeepLIFT/SHAP slightly. It may be faster on
+        server GPUs with high TF32 throughput; it has no effect on float64
+        inputs or on older GPUs. The previous global settings are restored on
+        return.
+    compile: bool or None
+        How to fuse each residual layer's elementwise epilogue (skip BatchNorm,
+        two ReLUs, the add): None (default) and False use TorchScript, True
+        torch.compile (with dynamic shapes, as the windows have a dozen
+        widths). The two run at the same speed here, and TorchScript skips
+        torch.compile's few seconds of compiling on the first call.
 
     Returns
     -------
-    attr: torch.Tensor, shape=(N, 4, end - start)
-        As tangermeme: each substitution's change in prediction, centered across
-        the alphabet at each position and averaged over the output's entries.
+    attr: torch.Tensor
+        Each substitution's change in prediction, centered across the alphabet
+        at each position (and multiplied by X unless `hypothetical`). For
+        output="counts", shape (N, 4, end - start), as tangermeme. For
+        output="profile", shape (N, 4, end - start, n_profile): the change at
+        every profile position, unreduced (tangermeme would average it over
+        the positions, which gives only the change in the profile's total, a
+        scale the model's predictions normalize away). ~16 MB per region for
+        a full window.
     -- or, if raw_outputs=True --
     y0: torch.Tensor (or list of [profile, counts] for output="both")
         The reference predictions, (N, n_outputs).
@@ -944,15 +1053,15 @@ def saturation_mutagenesis(
     """
 
     m, in_scale = _unwrap(model)
-    with _eval_mode(m):
+    with _eval_mode(m), _tf32(tf32):
         return _saturation_mutagenesis(
             m, in_scale, X, start, end, output, raw_outputs, hypothetical,
-            batch_size, device, verbose,
+            batch_size, device, verbose, compile,
         )
 
 
 def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
-                            hypothetical, batch_size, device, verbose):
+                            hypothetical, batch_size, device, verbose, compile):
     from tqdm import trange
 
     if output not in ("counts", "profile", "both"):
@@ -969,6 +1078,13 @@ def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
 
         m = copy.deepcopy(m).to(device)
     dtype = next(m.parameters()).dtype
+    f = _fold(m, in_scale)
+    # One kernel for each residual epilogue. Its windows have a dozen widths
+    # and strides, so torch.compile compiles it once with dynamic shapes.
+    # TorchScript by default: as fast as torch.compile here (one small
+    # elementwise kernel) without its ~3 s first compile in every process.
+    mode = "script" if compile is None else _resolve_compile(compile, device)
+    res_out = _fused(_res_out, mode, dynamic=True)
 
     X = X.to(torch.int8).cpu()
     N, A, L = X.shape
@@ -996,9 +1112,8 @@ def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
     y_hats = [[] for _ in heads]
     for g0 in trange(0, N, G, disable=not verbose):
         Xg = X[g0 : g0 + G]
-        xg = Xg.to(device, dtype) * in_scale
-        cache = _reference_cache(m, xg)
-        ref_out = _head(m, cache["q"], need_profile)
+        cache = _reference_cache(m, f, Xg.to(device, dtype), res_out)
+        ref_out = _head(m, f, cache["q"], need_profile)
         y0 = [ref_out[h].cpu() for h in heads]  # (n, n_outputs)
         grid = [y[:, None, None].expand(-1, A, W, -1).clone() for y in y0]
 
@@ -1024,7 +1139,7 @@ def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
             x_alt[rows, :, col] = 0
             x_alt[rows, chars_d, col] = 1
             out = _window_forward(
-                m, cache, x_alt.to(dtype) * in_scale, seq_d, spans, need_profile
+                m, f, cache, x_alt.to(dtype), seq_d, spans, res_out, need_profile
             )
             seq, chars, pos = seq[:n_rows], chars[:n_rows], pos[:n_rows]
             for gr, h in zip(grid, heads):
@@ -1041,5 +1156,7 @@ def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
         return y0, y_hat
     attr = y_hat - y0[:, None, None]
     attr = attr - attr.mean(dim=1, keepdim=True)
-    attr = attr.mean(dim=-1)
-    return attr if hypothetical else X[:, :, start:end] * attr
+    if output == "counts":
+        attr = attr.mean(dim=-1)
+        return attr if hypothetical else X[:, :, start:end] * attr
+    return attr if hypothetical else X[:, :, start:end, None] * attr

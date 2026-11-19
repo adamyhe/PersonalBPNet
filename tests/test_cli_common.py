@@ -90,6 +90,7 @@ def test_clipnet_tf_batch_size_defaults(monkeypatch):
     def spy(self, *args, **kwargs):
         ns = parse_args(self, *args, **kwargs)
         seen["batch_size"] = ns.batch_size
+        seen["tf32"] = ns.tf32
         raise SystemExit  # stop before any model or data is loaded
 
     monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
@@ -107,3 +108,10 @@ def test_clipnet_tf_batch_size_defaults(monkeypatch):
         except SystemExit:
             pass
         assert seen["batch_size"] == expected, argv
+        assert seen["tf32"] is False, argv
+    monkeypatch.setattr(sys, "argv", ["clipnet_tf", "ism", "--tf32", *required])
+    try:
+        tf.cli()
+    except SystemExit:
+        pass
+    assert seen["tf32"] is True

@@ -153,6 +153,56 @@ def test_saturation_mutagenesis_matches_tangermeme(start, end, batch_size):
         assert float((g - e).abs().max()) < 1e-10
 
 
+def test_saturation_mutagenesis_profile_attributions_are_unreduced():
+    """output="profile" keeps every profile position: tangermeme's centered
+    deltas before its mean over the outputs (which `counts` still takes)."""
+
+    model, X = _model(), _X(2, seed=3)
+    y0, y_hat = saturation_mutagenesis(model, X, start=10, end=30, output="profile",
+                                       raw_outputs=True, device="cpu")
+    d = y_hat - y0[:, None, None]
+    d = d - d.mean(dim=1, keepdim=True)
+    hyp = saturation_mutagenesis(model, X, start=10, end=30, output="profile",
+                                 hypothetical=True, device="cpu")
+    obs = saturation_mutagenesis(model, X, start=10, end=30, output="profile",
+                                 device="cpu")
+    assert hyp.shape == (2, 4, 20, 1000)
+    assert torch.allclose(hyp, d, rtol=0, atol=1e-12)
+    assert torch.allclose(obs, X[:, :, 10:30, None] * d, rtol=0, atol=1e-12)
+    expected = tm_saturation_mutagenesis(
+        _ProfileHead(model), X, start=10, end=30, hypothetical=True, device="cpu"
+    )
+    assert float((hyp.mean(dim=-1) - expected).abs().max()) < 1e-10
+
+
+@pytest.mark.parametrize("compile", [True, False])
+def test_saturation_mutagenesis_fusion_modes_agree(compile):
+    import personal_bpnet.clipnet_tf_fast as fast
+
+    model, X = _model(), _X(1, seed=4)
+    kwargs = dict(start=0, end=12, output="both", raw_outputs=True, device="cpu")
+    got = saturation_mutagenesis(model, X, compile=compile, **kwargs)
+    eager = fast._fused
+    try:
+        fast._fused = lambda fn, *args, **kw: fn
+        expected = saturation_mutagenesis(model, X, **kwargs)
+    finally:
+        fast._fused = eager
+    for g, e in zip(got[1], expected[1]):
+        assert float((g - e).abs().max()) < 1e-12
+
+
+class _ProfileHead(torch.nn.Module):
+    """The profile head alone, for tangermeme."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, X):
+        return self.model(X)[0]
+
+
 def test_saturation_mutagenesis_attributions_match_tangermeme():
     model = _model(counts_head_only=True)
     X = _X(seed=2)
@@ -179,7 +229,7 @@ def test_deep_lift_shap_fusion_modes_agree(compile):
     got = deep_lift_shap(model, X, target="profile", compile=compile, **kwargs)
     eager = fast._fused
     try:
-        fast._fused = lambda fn, mode="script": fn
+        fast._fused = lambda fn, *args, **kwargs: fn
         expected = deep_lift_shap(model, X, target="profile", **kwargs)
     finally:
         fast._fused = eager
@@ -193,3 +243,40 @@ def test_resolve_compile():
     assert _resolve_compile(None, cpu) == "script"
     assert _resolve_compile(False, cpu) == "script"
     assert _resolve_compile(True, cpu) == "compile"
+
+
+@pytest.mark.parametrize("tf32", [True, False])
+def test_tf32_is_set_during_the_call_and_restored(tf32, monkeypatch):
+    import personal_bpnet.clipnet_tf_fast as fast
+
+    cudnn, matmul = torch.backends.cudnn, torch.backends.cuda.matmul
+    before = (cudnn.allow_tf32, matmul.allow_tf32)
+    seen = []
+    real = fast._saturation_mutagenesis
+
+    def spy(*args, **kwargs):
+        seen.append((cudnn.allow_tf32, matmul.allow_tf32))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(fast, "_saturation_mutagenesis", spy)
+    try:
+        cudnn.allow_tf32 = matmul.allow_tf32 = not tf32
+        saturation_mutagenesis(_model(counts_head_only=True), _X(1), start=0, end=4,
+                               device="cpu", tf32=tf32)
+        assert seen == [(tf32, tf32)]
+        assert (cudnn.allow_tf32, matmul.allow_tf32) == (not tf32, not tf32)
+    finally:
+        cudnn.allow_tf32, matmul.allow_tf32 = before
+
+
+def test_tf32_restored_when_the_call_raises():
+    cudnn = torch.backends.cudnn
+    before = cudnn.allow_tf32
+    try:
+        cudnn.allow_tf32 = True
+        with pytest.raises(ValueError):
+            deep_lift_shap(_model(counts_head_only=True), _X(), target="profile",
+                           device="cpu")
+        assert cudnn.allow_tf32 is True
+    finally:
+        cudnn.allow_tf32 = before

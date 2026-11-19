@@ -55,6 +55,14 @@ def _parent_parser():
         "used for 'PauseNet' models, which trim the profile head and fine-tune the just"
         "the counts head.",
     )
+    parser_parent.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Allow TF32 convolutions/matmuls on GPUs that support them (Ampere and "
+        "newer). Off by default (full float32): TF32's rounding noise is about the "
+        "size of single-base effects, so it degrades ISM badly and attributions "
+        "slightly. May be faster on server GPUs with high TF32 throughput.",
+    )
     return parser_parent
 
 
@@ -161,9 +169,11 @@ def cli():
         type=str,
         default="counts",
         choices=("counts", "profile", "both"),
-        help="Which predictions to mutagenize. 'counts' (default) and 'profile' "
-        "save tangermeme-style ISM attributions (each substitution's change in "
-        "prediction, centered across bases and averaged over the output); 'both' "
+        help="Which predictions to mutagenize. 'counts' (default) saves "
+        "tangermeme-style ISM attributions, shape (n, 4, end - start): each "
+        "substitution's change in predicted counts, centered across bases. "
+        "'profile' saves the change at every profile position, unreduced, shape "
+        "(n, 4, end - start, 1000), ~16 MB per region for a full window. 'both' "
         "needs --raw_outputs.",
     )
     parser_ism.add_argument(
@@ -209,6 +219,10 @@ def cli():
     model_paths = resolve_model_paths(args.model_fname, pattern="fold_{i}.h5")
     set_cpu_threads()
     device = resolve_device()
+    # PyTorch defaults cuDNN convolutions to TF32 on Ampere+; keep full float32
+    # unless asked (the fast engines also take tf32= and restore the setting).
+    torch.backends.cudnn.allow_tf32 = args.tf32
+    torch.backends.cuda.matmul.allow_tf32 = args.tf32
 
     def _load_tf_model(f):
         return TwoHotToOneHot(
@@ -421,6 +435,7 @@ def cli():
                     verbose=args.verbose,
                     device=device,
                     profile_rule=args.profile_rule,
+                    tf32=args.tf32,
                 ).numpy()
             )
 
@@ -460,6 +475,7 @@ def cli():
                 batch_size=args.batch_size,
                 device=device,
                 verbose=args.verbose,
+                tf32=args.tf32,
             )
             flat = []
             for o in out if args.raw_outputs else [out]:
