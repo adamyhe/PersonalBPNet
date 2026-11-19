@@ -24,6 +24,8 @@ clipnet predict -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet predict_tss -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/ -a counts
 clipnet_tf ...   # same interface, for TF-ported models
+clipnet_tf ism -f genome.fa -b regions.bed -o out.npz -m model_dir/ -a counts   # TF-only: incremental ISM
+clipnet_tf pisa -f genome.fa -b regions.bed -o out.npz -m model_dir/ --strand plus   # TF-only: PISA
 
 pausenet predict -f genome.fa -b regions.bed -o out.npz -m model.torch
 pausenet attribute -f genome.fa -b regions.bed -o out.npz -m model.torch
@@ -33,7 +35,7 @@ Model directories are expected to contain files named `f1.torch` through `f9.tor
 
 ### CLI implementation pattern
 
-`src/cli/clipnet.py`, `src/cli/pausenet.py`, and `src/cli/tf.py` each define a single `cli()` function using `argparse` subparsers (`predict`, `predict_tss`, `attribute`). Shared scaffolding lives in `src/cli/_common.py`:
+`src/cli/clipnet.py`, `src/cli/pausenet.py`, and `src/cli/tf.py` each define a single `cli()` function using `argparse` subparsers (`predict`, `predict_tss`, `attribute`; `tf.py` also has `ism` and `pisa`). Shared scaffolding lives in `src/cli/_common.py`:
 - `build_parent_parser()` / `add_shape_args()` / `add_attribute_args()` — the common `-f/-b/-o/-m/-c/-bs/-v`, `--in_window/--out_window/--n_filters/--n_layers`, and `-a/-s/-y/-n/-r` argparse groups, reused across subcommands and CLIs.
 - `resolve_model_paths()` — expands a model directory into its `f1.torch..f9.torch` (or `fold_{i}.h5` for the TF CLI) replicate paths, or passes through a single file.
 - `load_ensemble()` / `load_torch_model()` — a generator that loads one replicate at a time (freeing it before the next is loaded, to avoid VRAM buildup) and handles the "bare state dict vs. full serialized module" checkpoint ambiguity.
@@ -57,7 +59,13 @@ This is a PyTorch genomics deep learning library extending [bpnetlite](https://g
 
 **`src/personal_bpnet/clipnet_tensorflow.py`** — `CLIPNET_TF`: Faithfully ports the original TensorFlow `rnn_v10` CLIPNET architecture to PyTorch using `from_tf(filename)`. A genuinely different architecture from the PyTorch `CLIPNET` above (uses MaxPool, ELU, 1000 bp input → 500 bp output, two-hot encoded inputs) — not a `BPNet` subclass. `TwoHotToOneHot` wrapper multiplies inputs by 2 for compatibility with one-hot pipelines.
 
-All of the above are re-exported from the top-level `personal_bpnet` package (`from personal_bpnet import CLIPNET, PauseNet, PersonalBPNet, ProCapNet, CLIPNET_TF, TwoHotToOneHot`).
+**`src/personal_bpnet/clipnet_tf_fast.py`** — architecture-specific interpretation engines for `CLIPNET_TF` (not re-exported at the top level; import from the submodule):
+- `deep_lift_shap(model, X, target="counts"|"profile", ...)`: equals tangermeme's `deep_lift_shap` on `CountWrapper(model)` (or the `ProfileWrapper` summary) with the same seeded references, but uses a hand-written forward over joint rows `[x_0..x_{S-1}, r_00..r_{S-1,K-1}]` (each sequence forwarded once) and a hand-written backward over only the sequence half of each pair, with no hooks. The rules (rescale at ELU/ReLU, tangermeme's max-pool rule, and for the profile tangermeme >= 1.5's softmax + midpoint product rules) are plain tensor functions fused via `_fused`: with `torch.compile` where Triton runs (CUDA capability >= 7.0, torch >= 2.6), and with `torch.jit.script` elsewhere (TorchScript's fuser also runs on the lab's Pascal GPUs, where Triton can't). `compile=None/True/False` selects the mode (`_resolve_compile`). Both specialize on shape, so the last step is padded to the full step size. The default step size (`_default_batch_size`) is the smallest that saturates the GPU (`_ROWS_PER_SM`, measured on a TITAN X), since peak memory is linear in it (~70 MiB a sequence at 20 shuffles) and larger steps aren't faster. `profile_rule="rescale"` reproduces the old bpnet-lite `_ProfileLogitScaling` + `_nonlinear` behavior.
+- `saturation_mutagenesis(model, X, output="counts"|"profile"|"both", ...)`: incremental (fastISM) ISM. It caches each reference's layers (`_reference_cache`), and `_spans` computes the window of each stage an edited block can change, at a fixed width per stage (shifted inward at sequence ends) so that cuDNN sees one shape per stage. `_window_forward` recomputes those windows, splicing them into the cache (`_splice`). A step covers a few positions of many sequences. The ISM forward doesn't call the model's modules: `_fold` folds every eval-mode BatchNorm (and the TwoHotToOneHot scale) into the adjacent conv/linear, the cache stores each residual input pre-padded by its dilation, and `_res_out` (the residual epilogue) is fused via `_fused(..., dynamic=True)` (window widths vary, so a static compile would recompile per shape). `output="profile"` attributions are unreduced, `(N, 4, W, n_profile)`, unlike tangermeme's mean over outputs. Both engines take `tf32=False` (`_tf32` context manager; TF32 noise swamps float32 ISM on Ampere+).
+- `pisa(model, X, channel=None|0|1, target="track"|"profile", outputs=None, ...)`: DeepLIFT/SHAP of every profile output position, after Cherimoya's `_pisa_engine`. Reuses `_forward` on [x, its K references], then `_pisa_terms` evaluates every rule (the same rule functions as `deep_lift_shap`) on a gradient of ones to get its activation-only coefficient per pair. `_pisa_head` builds each output's gradient at q as `a W_j + b u + e wc` (the "track" target, `c * y / (sum(y) + 1e-3)`, uses the midpoint product rule and a rescale rule at the reciprocal), and `_pisa_backward` runs (K x chunk of outputs) rows through conv transposes and fused elementwise steps (`_unpool`, `_pisa_residual`). References are drawn as tangermeme's `pisa` draws them (the same seed for every sequence), which differs from `deep_lift_shap`'s seeds.
+- When changing `CLIPNET_TF`'s architecture, these engines must change with it. `tests/test_clipnet_tf_fast.py` checks all three against tangermeme in float64.
+
+All of the above (except `clipnet_tf_fast`) are re-exported from the top-level `personal_bpnet` package (`from personal_bpnet import CLIPNET, PauseNet, PersonalBPNet, ProCapNet, CLIPNET_TF, TwoHotToOneHot`).
 
 ### Loss functions (`src/personal_bpnet/losses.py`)
 
@@ -82,7 +90,7 @@ DataLoader batches are expected as tuples:
 
 ### Testing
 
-`tests/` (pytest) covers model construction/forward shapes, state_dict key parity with bare `bpnetlite` classes, loss functions, and the twohot encoding utilities — all CPU-only, no real data or pretrained weights required. Run with `uv run pytest`. `.github/workflows/ci.yml` runs this suite on push/PR across every Python version listed in `pyproject.toml`'s classifiers (currently 3.9–3.13; re-verify all still pass with `uv run --python X pytest` before adding/dropping a version there). For anything not covered by the suite (actual training runs, real genomic data), verify by running the relevant CLI command or a small script against sample data.
+`tests/` (pytest) covers model construction/forward shapes, state_dict key parity with bare `bpnetlite` classes, loss functions, and the twohot encoding utilities — all CPU-only, no real data or pretrained weights required. Run with `uv run pytest`. `.github/workflows/ci.yml` runs this suite on push/PR across every Python version listed in `pyproject.toml`'s classifiers (currently 3.11–3.14; re-verify all still pass with `uv run --python X pytest` before adding/dropping a version there). For anything not covered by the suite (actual training runs, real genomic data), verify by running the relevant CLI command or a small script against sample data.
 
 ### Docs and publishing
 

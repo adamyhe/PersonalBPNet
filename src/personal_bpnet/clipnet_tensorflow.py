@@ -98,7 +98,7 @@ class CLIPNET_TF(torch.nn.Module):
         self.irelu = torch.nn.ELU(alpha=1)
         self.imp = torch.nn.MaxPool1d(2)
 
-        self.sconv = torch.nn.Conv1d(32, 128, kernel_size=4, padding=0)
+        self.sconv = torch.nn.Conv1d(64, 64, kernel_size=4, padding=0)
         self.sbnorm = torch.nn.BatchNorm1d(64)
         self.srelu = torch.nn.ReLU()
         self.smp = torch.nn.MaxPool1d(2)

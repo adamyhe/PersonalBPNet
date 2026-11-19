@@ -21,7 +21,7 @@ uv run python          # or drop into a Python shell with the package importable
 uv run pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs this suite on every push and pull request, across every Python version listed in `pyproject.toml`'s classifiers. If you change the minimum/maximum supported Python version, verify the suite still passes under it first, e.g. `uv run --python 3.13 pytest`.
+CI (`.github/workflows/ci.yml`) runs this suite on every push and pull request, across every Python version listed in `pyproject.toml`'s classifiers. If you change the minimum/maximum supported Python version, verify the suite still passes under it first, e.g. `uv run --python 3.14 pytest`.
 
 ## Releasing
 
