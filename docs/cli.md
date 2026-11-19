@@ -49,3 +49,8 @@ clipnet_tf attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/
 ```
 
 For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are expected to contain `fold_1.h5`..`fold_9.h5`. Input/output windows are fixed at 1000/500 bp (the original architecture's shape), so there are no `--in_window`/`--n_filters`/etc. flags. Pass `--counts_head_only` for counts-only ("PauseNet"-style) TF models.
+
+`clipnet_tf attribute` runs the CLIPNET_TF-specific DeepLIFT/SHAP engine ([details](clipnet-tf.md#fast-deepliftshap-and-ism)), which computes the same attributions as tangermeme's `deep_lift_shap` (same references for a given `-r/--random_state`) about 3x faster on a GPU. Two differences from the other CLIs:
+
+- `-bs/--batch_size` is the number of *sequences* per step, each with all of its `-n` references (tangermeme's `batch_size` counts sequence–reference pairs). By default the engine picks the smallest step that saturates the GPU (16 on a TITAN X, scaled by SM count on larger GPUs) if it fits in half the free memory. Memory grows ~70 MiB per sequence at 20 shuffles. A step that runs out of memory is retried at half the size.
+- `-a profile` uses tangermeme's (≥ 1.5) softmax and midpoint product rules for the profile summary `sum(c * softmax(c))`. Up to version 0.7.0 it applied the elementwise rescale rule to the whole product, which does not fit a softmax (it couples every position, so the attributions don't exactly sum to the change in prediction). Pass `--profile_rule rescale` to reproduce those older attributions.

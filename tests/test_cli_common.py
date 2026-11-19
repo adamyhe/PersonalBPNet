@@ -72,3 +72,36 @@ class TestAverageProfileAndCounts:
         ).reshape(2, 2, 5)
 
         assert torch.allclose(actual, expected)
+
+
+def test_clipnet_tf_batch_size_defaults(monkeypatch):
+    """`clipnet_tf attribute` leaves -bs to the fast engine's planner (None);
+    the other subcommands keep the shared default of 16."""
+
+    import argparse
+    import sys
+
+    import cli.tf as tf
+
+    seen = {}
+    parse_args = argparse.ArgumentParser.parse_args
+
+    def spy(self, *args, **kwargs):
+        ns = parse_args(self, *args, **kwargs)
+        seen["batch_size"] = ns.batch_size
+        raise SystemExit  # stop before any model or data is loaded
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    required = ["-f", "a.fa", "-b", "a.bed", "-o", "o.npz", "-m", "m.h5"]
+    for argv, expected in [
+        (["attribute"], None),
+        (["predict"], 16),
+        (["predict_tss"], 16),
+        (["attribute", "-bs", "4"], 4),
+    ]:
+        monkeypatch.setattr(sys, "argv", ["clipnet_tf", *argv, *required])
+        try:
+            tf.cli()
+        except SystemExit:
+            pass
+        assert seen["batch_size"] == expected, argv

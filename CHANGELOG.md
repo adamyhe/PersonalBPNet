@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `personal_bpnet.clipnet_tf_fast.deep_lift_shap`: a DeepLIFT/SHAP engine written for `CLIPNET_TF`, after Cherimoya's and promoterai-torch's: joint sequence/reference rows (each sequence forwarded once instead of once per reference), a hand-written backward over only the sequence half of each pair, TorchScript-fused DeepLIFT rules, and references drawn on the CPU while the GPU runs. It returns the same attributions as tangermeme's `deep_lift_shap` (same references for a given seed) about 3x faster on a GPU (TITAN X Pascal: 1024 sequences × 20 shuffles in 3.6 s vs 12.4 s), in ~5x less memory per sequence–reference pair. The rules are fused with `torch.compile` on GPUs of compute capability >= 7.0 and with TorchScript elsewhere (`compile=` to choose).
+- `personal_bpnet.clipnet_tf_fast.saturation_mutagenesis`: incremental (fastISM) in silico saturation mutagenesis for `CLIPNET_TF`. It caches each reference's layers and recomputes only the window each substitution can reach, giving the same predictions as tangermeme's `saturation_mutagenesis` 2.0-2.3x faster on a GPU.
+- `clipnet_tf attribute --profile_rule {product,rescale}`.
+
+### Changed
+- `clipnet_tf attribute` uses the fast engine. `-bs/--batch_size` now counts sequences per step (each with all `-n` references) rather than sequence–reference pairs, and defaults to the engine's own choice (the smallest step that saturates the GPU) instead of 16.
+- `clipnet_tf attribute -a profile` now attributes the profile summary `sum(c * softmax(c))` with tangermeme's (>= 1.5) softmax and midpoint product rules, instead of the elementwise rescale rule over the whole product (bpnet-lite's `ProfileWrapper` with `_ProfileLogitScaling` registered as `_nonlinear`). The rescale rule does not fit a softmax, which couples every position. Profile attributions therefore change; `--profile_rule rescale` reproduces the old ones.
+- Supported Python versions are now 3.11–3.14 (`requires-python = ">= 3.11"`; CI matrix updated). 3.9 and 3.10 are past end of life, 3.9 could no longer build bpnet-lite's `macs3` dependency, and current torch requires >= 3.11.
+- `uv.lock`: tangermeme 1.4.0 -> 1.6.0.
+- `[tool.uv] exclude-dependencies = ["macs3"]`: bpnet-lite declares `macs3`, but only its `bpnet` pipeline command uses it (it runs the `macs3` executable to call peaks). Neither bpnet-lite's library nor this package imports it. `macs3` ships no wheels, and its source build fails on Python 3.11 (newest Cython against an older numpy), so uv installs (the lockfile, development, CI) now leave it and its dependencies (`cykhash`, `hmmlearn`) out, and every locked package installs from a wheel. `pip install personalbpnet` still pulls it in through bpnet-lite.
+
+### Fixed
+- `CLIPNET_TF.__init__` declared `sconv` as `Conv1d(32, 128, 4)` while the TF weights (and the rest of the network) are `Conv1d(64, 64, 4)`. A model built directly, rather than through `from_tf` (which overwrote the tensor), could not run a forward pass or load a state dict saved from a `from_tf` model.
+
 ## [0.7.0] - 2026-08-01
 
 ### Changed (breaking)

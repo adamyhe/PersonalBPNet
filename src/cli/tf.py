@@ -12,15 +12,14 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 import torch
-from bpnetlite.bpnet import CountWrapper, ProfileWrapper, _ProfileLogitScaling
 from bpnetlite.performance import pearson_corr, spearman_corr
 from scipy.spatial.distance import jensenshannon
 from sklearn.linear_model import LinearRegression
-from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
 
 from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
+from personal_bpnet.clipnet_tf_fast import deep_lift_shap as fast_deep_lift_shap
 
 from ._common import (
     add_attribute_args,
@@ -41,7 +40,11 @@ Planned but not implemented commands:
 """
 
 
-def cli():
+def _parent_parser():
+    """The arguments every clipnet_tf subcommand takes. Built fresh per call:
+    subparsers share their parents' argument objects, so `attribute` gets its
+    own copy to change the -bs default on."""
+
     parser_parent = build_parent_parser()
     parser_parent.add_argument(
         "--counts_head_only",
@@ -50,6 +53,11 @@ def cli():
         "used for 'PauseNet' models, which trim the profile head and fine-tune the just"
         "the counts head.",
     )
+    return parser_parent
+
+
+def cli():
+    parser_parent = _parent_parser()
 
     parser = ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(
@@ -101,12 +109,34 @@ def cli():
 
     # ATTRIBUTE PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    attribute_parent = _parent_parser()
+    # The fast DeepLIFT/SHAP engine picks its own step size (the smallest that
+    # saturates the GPU, within its memory), so -bs defaults to that here.
+    for action in attribute_parent._actions:
+        if action.dest == "batch_size":
+            action.default = None
+            action.help = (
+                "Sequences per step, each with all of its -n references. Defaults "
+                "to the smallest step that saturates the GPU (16 on a 28-SM TITAN "
+                "X, scaled by SM count), if it fits in half the free memory "
+                "(~70 MiB a sequence at 20 shuffles); 8 on the CPU."
+            )
     parser_attribute = subparsers.add_parser(
         "attribute",
         help="Calculate attributions for a given set of regions.",
-        parents=[parser_parent],
+        parents=[attribute_parent],
     )
     add_attribute_args(parser_attribute)
+    parser_attribute.add_argument(
+        "--profile_rule",
+        type=str,
+        default="product",
+        choices=("product", "rescale"),
+        help="DeepLIFT rule for the profile summary sum(c * softmax(c)). 'product' "
+        "(default) uses tangermeme's (>= 1.5) softmax and midpoint product rules; "
+        "'rescale' applies the elementwise rescale rule to the whole product, which "
+        "reproduces attributions from personalbpnet <= 0.7.0.",
+    )
     args = parser.parse_args()
 
     # MAIN CODE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -309,28 +339,23 @@ def cli():
 
         attributions = []
         for model in load_ensemble(model_paths, _load_tf_model):
-            additional_nonlinear_ops = None
-            # Wrap models depending on args.attribute_type
-            if args.counts_head_only:
-                pass
-            elif args.attribute_type == "counts":
-                model = CountWrapper(model)
-            elif args.attribute_type == "profile":
-                model = ProfileWrapper(model)
-                additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
-
-            # Calculate and log attributions
+            # The CLIPNET_TF-specific engine: same references and rules as
+            # tangermeme's deep_lift_shap on CountWrapper/ProfileWrapper, with a
+            # hand-written forward/backward (see personal_bpnet.clipnet_tf_fast).
             attributions.append(
-                deep_lift_shap(
+                fast_deep_lift_shap(
                     model,
                     X,
+                    target="counts"
+                    if args.counts_head_only
+                    else args.attribute_type,
                     hypothetical=args.hypothetical,
                     batch_size=args.batch_size,
                     n_shuffles=args.n_shuffles,
                     random_state=args.random_state,
                     verbose=args.verbose,
-                    additional_nonlinear_ops=additional_nonlinear_ops,
                     device=device,
+                    profile_rule=args.profile_rule,
                 ).numpy()
             )
 
