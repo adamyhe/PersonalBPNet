@@ -2,9 +2,10 @@
 # Author: Adam He <adamyhe@gmail.com>
 
 """
-Fast DeepLIFT/SHAP and in silico saturation mutagenesis for `CLIPNET_TF`.
+Fast DeepLIFT/SHAP, in silico saturation mutagenesis and PISA for `CLIPNET_TF`.
 
-Both functions here compute what a generic tangermeme call computes for a
+`pisa` (DeepLIFT/SHAP of every profile output position) is described at its
+own section below. The other two functions compute what a generic tangermeme call computes for a
 `CLIPNET_TF` model, but with the forward and backward passes written out for
 this one architecture, following the engines in Cherimoya
 (`cherimoya/_deep_lift_shap_engine.py`) and promoterai-torch
@@ -1160,3 +1161,405 @@ def _saturation_mutagenesis(m, in_scale, X, start, end, output, raw_outputs,
         attr = attr.mean(dim=-1)
         return attr if hypothetical else X[:, :, start:end] * attr
     return attr if hypothetical else X[:, :, start:end, None] * attr
+
+
+# ======================================================================= PISA
+#
+# PISA (tangermeme.pisa.pisa) runs DeepLIFT/SHAP once for every profile output
+# position. Every rule here is linear in the gradient it is given, with a
+# coefficient that depends only on the activations of the sequence-reference
+# pair (the rescale rule's multiplier at each ELU/ReLU, the max-pool rule's
+# routing). So, after Cherimoya's PISA engine, those coefficients are computed
+# once per pair (`_pisa_terms`) and shared by every output position, and the
+# backward (`_pisa_backward`) is then a chain of convolution transposes and
+# elementwise products over K * B rows: the K references of one sequence times
+# a chunk of B output positions, sequence half only. The profile head is dense,
+# so each output position's gradient is full width from the start: unlike
+# Cherimoya's convolutional profile head, there is no window to exploit.
+
+
+def _unpool(G, coef):
+    """The max-pool rule (and the rescale rule after it, folded into coef) on
+    gradient G (..., Lo): each output's gradient sent to both entries of its
+    window, zero-padded to coef's length, times coef."""
+
+    up = G.unsqueeze(-1).expand(*G.shape, 2).flatten(-2)
+    return F.pad(up, (0, coef.shape[-1] - up.shape[-1])) * coef
+
+
+def _pisa_residual(G, Gconv, skip, c):
+    """One residual layer's step down: the gradient at the layer's input (its
+    output's gradient G plus the conv transpose's Gconv), times the skip rule
+    of the layer below (`skip`), and that times the layer below's conv rule
+    (`c`), the next conv transpose's input."""
+
+    G = (G + Gconv) * skip
+    return G, G * c
+
+
+_TRACK_EPS = 1e-3  # as `clipnet_tf predict`'s count * profile / (sum + 1e-3)
+
+
+def _midpoint(t):
+    """(t_x + t_r) / 2 for rows [x, r_0..r_{K-1}]: the midpoint product rule's
+    multiplier, (K, ...)."""
+
+    return 0.5 * (t[:1] + t[1:])
+
+
+def _pisa_head(m, s, outputs, target):
+    """The attributed outputs y (K + 1, n_out) of rows [x, r_0..r_{K-1}] and
+    the head's terms, from which `_pisa_backward` builds each output's
+    gradient at the final pool's output q (K, C, Lo):
+
+        G[k, j] = a[k, j] W[j] + b[k, j] u[k] + e[k, j] wc
+
+    W[j] is the profile dense layer's row for output j and wc the counts
+    layer's (both arranged like q), u[k] the profile layer's transpose applied
+    to pair k's profile multipliers.
+
+    target="profile" attributes the profile head's outputs y_j (after its
+    ReLU): a is the rescale rule's multiplier there and b = e = 0.
+    target="track" attributes the predicted track, the profile normalized and
+    scaled by the counts head as `clipnet_tf predict` reports it,
+    T_j = c y_j / (sum_k y_k + 1e-3), written as T_j = y_j w, w = c v,
+    v = 1 / (S + 1e-3), S = sum_k y_k: the midpoint product rule at both
+    products (exact, as tangermeme's for `BilinearOp`) and the rescale rule
+    at the reciprocal. The multiplier of T_j at y_k is then
+    delta_jk w~ + y~_j c~ v', and at c it is y~_j v~ (~: the midpoint of the
+    sequence and the reference, v': the reciprocal's secant), which with the
+    heads' own rescale rules gives a, b and e."""
+
+    K = s["zp"].shape[0] - 1
+    Lo, C = s["q"].shape[-1], s["q"].shape[1]
+    zp = s["zp"]
+    y = F.relu(zp)  # (K + 1, n_profile)
+    slope_p = _relu_rescale(torch.ones_like(zp[1:]), zp[:1], zp[1:], _bn_scale(m.pbnorm))
+    W = m.plinear.weight[outputs].reshape(len(outputs), Lo, C).transpose(1, 2)
+    if target == "profile":
+        return y[:, outputs], {"a": slope_p[:, outputs], "W": W}
+    if target != "track":
+        raise ValueError("target must be 'track' or 'profile'")
+
+    z = s["z"][:, 0]
+    c = F.relu(z)  # (K + 1,)
+    slope_c = _relu_rescale(torch.ones_like(z[1:]), z[:1], z[1:], _bn_scale(m.cbnorm)[0])
+    S = y.sum(-1) + _TRACK_EPS
+    v = S.reciprocal()
+    dS = S[:1] - S[1:]
+    small = dS.abs() < _RESCALE_EPS
+    slope_v = torch.where(  # the reciprocal's rescale rule (its gradient at x)
+        small, -(v[:1] ** 2).expand_as(dS), (v[:1] - v[1:]) / torch.where(small, 1.0, dS)
+    )
+    w = c * v
+    y_mid = _midpoint(y[:, outputs])
+    u = (slope_p @ m.plinear.weight).reshape(K, Lo, C).transpose(1, 2)
+    wc = (m.clinear.weight[0] / Lo)[:, None]  # (C, 1); slope_c has cbnorm's scale
+    head = {
+        "a": _midpoint(w)[:, None] * slope_p[:, outputs],
+        "W": W,
+        "b": y_mid * (_midpoint(c) * slope_v)[:, None],
+        "u": u,
+        "e": y_mid * (_midpoint(v) * slope_c)[:, None],
+        "wc": wc,
+    }
+    return (y[:, outputs] * w[:, None]), head
+
+
+def _pisa_terms(m, s, K):
+    """The coefficients of every rule below the heads for the K pairs of one
+    sequence (rows [x, r_0..r_{K-1}] of `_forward`'s saved activations s),
+    each shaped (K, 1, ...) to broadcast over a chunk of output positions."""
+
+    def split(t):  # (K + 1, ...) -> (1, ...), (K, ...) with an axis for B
+        return t[:1], t[1:].unsqueeze(1)
+
+    def ones(t):
+        return torch.ones_like(split(t)[1])
+
+    def rescale(name, bn, rule=_relu_rescale, t=None):
+        t = s[name] if t is None else t
+        x, r = split(t)
+        return rule(ones(t), x, r, _bn_scale(bn)[:, None])
+
+    def pool(sel, inp):
+        x, r = split(inp)
+        sx, sr = split(s[sel])
+        g = torch.ones_like(sr, dtype=inp.dtype)
+        return _maxpool_rule(g, x, r, sx, sr)
+
+    n = m.n_layers
+    skip = [rescale(None, m.skipbnorms[i], t=s["s"][i]) for i in range(n)]
+    terms = {
+        "c": [rescale(None, m.rbnorms[i], t=s["c"][i]) for i in range(n)],
+        "skip": skip,
+        "top": pool("sel2", s["h"]) * skip[-1],
+        "mid": pool("sel1", F.relu(s["a1"])) * rescale("a1", m.sbnorm),
+        "stem": pool("sel0", F.elu(s["a0"])) * rescale("a0", m.ibn, _elu_rescale),
+    }
+    return terms
+
+
+def _pisa_backward(m, terms, head, js, in_scale, length, fused):
+    """The multipliers (K, B, 4, length) at the one-hot input of the outputs
+    js (a chunk of B indices into the attributed outputs), for each of one
+    sequence's K pairs."""
+
+    unpool, residual = fused
+    a = head["a"][:, js, None, None]
+    K, B = a.shape[:2]
+    G = a * head["W"][js]  # (K, B, C, Lo) at q
+    if "u" in head:
+        G = G + head["b"][:, js, None, None] * head["u"][:, None]
+        G = G + head["e"][:, js, None, None] * head["wc"]
+    G = unpool(G, terms["top"])  # final pool, then the top skip rule
+    Gc = G * terms["c"][-1]
+
+    def conv_t(conv, g, n_in, padding=0):
+        out = torch.nn.grad.conv1d_input(
+            (K * B, conv.in_channels, n_in), conv.weight,
+            g.reshape(K * B, *g.shape[2:]), padding=padding, dilation=conv.dilation[0],
+        )
+        return out.reshape(K, B, *out.shape[1:])
+
+    n = G.shape[-1]
+    for i in reversed(range(m.n_layers)):
+        Gconv = conv_t(m.rconvs[i], Gc, n, _same_pad(m.rpads[i]))
+        if i > 0:
+            G, Gc = residual(G, Gconv, terms["skip"][i - 1], terms["c"][i - 1])
+        else:
+            G = G + Gconv
+
+    G = torch.einsum("kbol,oi->kbil", G, m.rconv.weight[:, :, 0])
+    G = unpool(G, terms["mid"])  # second pool, then sconv's ReLU and BatchNorm
+    G = conv_t(m.sconv, G, terms["stem"].shape[-1] // 2)
+    G = unpool(G, terms["stem"])  # stem pool, then iconv's ELU and BatchNorm
+    G = conv_t(m.iconv, G, length)
+    return G * (_bn_scale(m.ibnorm)[:, None] * in_scale)
+
+
+def _pisa_references(x, K, random_state):
+    """tangermeme `pisa`'s references for one sequence x (4, L): its K
+    dinucleotide shuffles, drawn with the same seed for every sequence."""
+
+    from tangermeme.ersatz import dinucleotide_shuffle
+
+    return dinucleotide_shuffle(x[None], n=K, random_state=random_state)[0]
+
+
+_PISA_ROWS = 2048  # pair-output rows per backward step; larger was no faster
+
+
+def _pisa_batch_size(m, K, L, n_out, device, dtype):
+    """Output positions per step: enough for ~`_PISA_ROWS` rows (K per
+    position), or fewer if an estimate of the step's live gradients (the
+    stem's are the widest) doesn't fit in half the free memory; split evenly
+    over the outputs so that every step has the same shape."""
+
+    if device.type != "cuda":
+        B = max(1, 256 // K)
+    else:
+        free, _ = torch.cuda.mem_get_info(device)
+        free += torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        itemsize = torch.tensor([], dtype=dtype).element_size()
+        per_row = 4 * m.rconv.out_channels * L * itemsize
+        B = max(1, min(_PISA_ROWS, int(0.5 * free // per_row)) // K)
+    B = min(B, n_out)
+    return -(-n_out // -(-n_out // B))
+
+
+@torch.no_grad()
+def pisa(
+    model,
+    X,
+    channel=None,
+    target="track",
+    outputs=None,
+    references=None,
+    n_shuffles=20,
+    random_state=None,
+    batch_size=None,
+    hypothetical=False,
+    warning_threshold=1e-3,
+    return_deltas=False,
+    device=None,
+    verbose=False,
+    tf32=False,
+    compile=None,
+):
+    """PISA attributions of a CLIPNET_TF model's profile.
+
+    PISA (pairwise influence by sequence attribution) runs DeepLIFT/SHAP once
+    for every profile output position: the attributions of the prediction at
+    each position to every input nucleotide. By default the prediction is the
+    track `clipnet_tf predict` reports, the profile normalized and scaled by
+    the predicted counts (see `target`). Equal, up to floating-point rounding,
+    to tangermeme's `pisa` on a wrapper returning that output at the
+    positions of `channel`, written with `BilinearOp` for its products and a
+    reciprocal module registered with the rescale rule, with the same
+    references for a given `random_state`. As in Cherimoya's PISA
+    engine, each sequence is forwarded once with its references, every rule's
+    coefficient (which depends only on the activations) is computed once per
+    sequence-reference pair and shared by all output positions, and the
+    backward runs over the sequence half of each pair only, for a chunk of
+    output positions at a time.
+
+    Parameters
+    ----------
+    model: CLIPNET_TF or TwoHotToOneHot
+        The model, with a profile head. Run in eval mode; not moved or changed.
+    X: torch.Tensor, shape=(N, 4, L)
+        One-hot sequences.
+    channel: int or None
+        0 for the + strand's profile (outputs 0..499), 1 for the - strand's
+        (500..999), None for both (all 1000). Default None.
+    target: "track" or "profile"
+        "track" (default) attributes the predicted track,
+        T_j = c * y_j / (sum(y) + 1e-3), with y the profile head's output (both
+        strands, after its ReLU) and c the counts head's: the profile
+        normalized to a distribution and scaled by the predicted counts, as
+        `clipnet_tf predict` reports it. Its products use the midpoint product
+        rule and the reciprocal the rescale rule, so the attributions still
+        sum to the change in each output. "profile" attributes y_j itself,
+        whose scale the predictions normalize away.
+    outputs: sequence of int, optional
+        Indices into the 1000 profile outputs to attribute, instead of
+        `channel`'s; the cost is proportional to their number.
+    references: torch.Tensor, shape=(N, K, 4, L), optional
+        The references. Default: n_shuffles dinucleotide shuffles of each
+        sequence, drawn as tangermeme's `pisa` draws them
+        (``dinucleotide_shuffle(X[i:i+1], n=n_shuffles,
+        random_state=random_state)``).
+    n_shuffles: int
+        References per sequence when `references` is None. Default 20.
+    random_state: int or None
+        The seed of the shuffles. Default None.
+    batch_size: int, optional
+        Output positions per backward step, each over the K pairs. Default:
+        enough for ~2048 rows, if it fits in half the free memory.
+    hypothetical: bool
+        Return the attribution of every base instead of multiplying by X.
+        Default False.
+    warning_threshold: float or None
+        Warn if any convergence delta (|change in output - sum of
+        attributions| for one output and pair) exceeds this. Default 1e-3.
+    return_deltas: bool
+        Also return the convergence deltas. Default False.
+    device: str or torch.device, optional
+        Default: CUDA if available, else the CPU.
+    verbose: bool
+        Show a progress bar over sequences. Default False.
+    tf32: bool
+        Allow TF32 (see `deep_lift_shap`). Default False.
+    compile: bool or None
+        How to fuse the elementwise steps, as in `deep_lift_shap`: None
+        (default) uses torch.compile where its Triton backend runs and
+        TorchScript elsewhere, True torch.compile, False TorchScript.
+        torch.compile was ~20% faster on an RTX 3080 and takes a few seconds
+        to compile on the first call in a process.
+
+    Returns
+    -------
+    attributions: torch.Tensor, shape=(N, n_out, 4, L), on the CPU
+        n_out is 500 for one strand, 1000 for both: ~8 MB per sequence and
+        strand in float32.
+    deltas: torch.Tensor, shape=(N, K, n_out), on the CPU, if `return_deltas`
+    """
+
+    m, in_scale = _unwrap(model)
+    with _eval_mode(m), _tf32(tf32):
+        return _pisa(m, in_scale, X, channel, target, outputs, references, n_shuffles,
+                     random_state,
+                     batch_size, hypothetical, warning_threshold, return_deltas,
+                     device, verbose, compile)
+
+
+def _pisa(m, in_scale, X, channel, target, outputs, references, n_shuffles,
+          random_state, batch_size,
+          hypothetical, warning_threshold, return_deltas, device, verbose, compile):
+    from tqdm import trange
+
+    if m.counts_head_only:
+        raise ValueError("a counts-head-only model has no profile to attribute")
+    if X.ndim != 3 or X.shape[1] != 4:
+        raise ValueError(f"X must have shape (N, 4, L), got {tuple(X.shape)}")
+    n_profile = m.plinear.out_features
+    half = n_profile // 2
+    if target not in ("track", "profile"):
+        raise ValueError("target must be 'track' or 'profile'")
+    if outputs is not None:
+        outputs = torch.as_tensor(outputs, dtype=torch.long).flatten()
+        if len(outputs) == 0 or outputs.min() < 0 or outputs.max() >= n_profile:
+            raise ValueError(f"outputs must be indices in [0, {n_profile})")
+    elif channel is None:
+        outputs = torch.arange(n_profile)
+    elif channel in (0, 1) and not isinstance(channel, bool):
+        outputs = torch.arange(channel * half, (channel + 1) * half)
+    else:
+        raise ValueError(f"channel must be 0, 1 or None, got {channel!r}")
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+    if next(m.parameters()).device != device:
+        import copy
+
+        m = copy.deepcopy(m).to(device)
+    dtype = next(m.parameters()).dtype
+
+    N, _, L = X.shape
+    K = n_shuffles if references is None else references.shape[1]
+    if references is not None and (
+        references.ndim != 4 or references.shape[0] != N or references.shape[2:] != X.shape[1:]
+    ):
+        raise ValueError(
+            f"references must have shape ({N}, K, 4, {L}), got {tuple(references.shape)}"
+        )
+    n_out = len(outputs)
+    B = batch_size or _pisa_batch_size(m, K, L, n_out, device, dtype)
+    mode = _resolve_compile(compile, device)
+    fused = (_fused(_unpool, mode, dynamic=True), _fused(_pisa_residual, mode, dynamic=True))
+    outputs_d = outputs.to(device)
+
+    def draw(i):
+        if references is None:
+            return _pisa_references(X[i].to(dtype), K, random_state)
+        return references[i].to(dtype)
+
+    attr = torch.empty(N, n_out, 4, L, dtype=dtype)
+    deltas = torch.empty(N, K, n_out, dtype=dtype)
+    R = draw(0)
+    for i in trange(N, disable=not verbose):
+        x = X[i].to(device, dtype)
+        r = R.to(device)
+        s = _forward(m, torch.cat([x[None], r]) * in_scale)
+        terms = _pisa_terms(m, s, K)
+        y, head = _pisa_head(m, s, outputs_d, target)
+        dy = y[:1] - y[1:]  # (K, n_out)
+        del s
+        diff = x - r  # (K, 4, L)
+        hyp = torch.empty(n_out, 4, L, dtype=dtype, device=device)
+        dl = torch.empty(K, n_out, dtype=dtype, device=device)
+        for j0 in range(0, n_out, B):
+            js = torch.arange(j0, min(j0 + B, n_out), device=device)
+            M = _pisa_backward(m, terms, head, js, in_scale, L, fused)  # (K, B, 4, L)
+            # tangermeme's hypothetical attributions, M_b - sum_c M_c r_c at
+            # each position, averaged over the pairs
+            hyp[js] = (M.sum(0) - torch.einsum("kbcl,kcl->bl", M, r)[:, None]) / K
+            dl[:, js] = (dy[:, js] - torch.einsum("kbcl,kcl->kb", M, diff)).abs()
+        # draw the next sequence's references while the GPU finishes this one
+        if i + 1 < N:
+            R = draw(i + 1)
+        attr[i] = hyp.cpu()
+        deltas[i] = dl.cpu()
+
+    if warning_threshold is not None and bool((deltas > warning_threshold).any()):
+        warnings.warn(
+            f"Convergence deltas too high: {int((deltas > warning_threshold).sum())} "
+            f"of {deltas.numel()} > {warning_threshold:g}, the largest "
+            f"{float(deltas.max()):.4g}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if not hypothetical:
+        attr = attr * X.cpu().to(dtype)[:, None]
+    return (attr, deltas) if return_deltas else attr

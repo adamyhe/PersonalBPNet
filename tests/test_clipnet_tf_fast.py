@@ -280,3 +280,99 @@ def test_tf32_restored_when_the_call_raises():
         assert cudnn.allow_tf32 is True
     finally:
         cudnn.allow_tf32 = before
+
+
+# ----------------------------------------------------------------------- PISA
+
+
+class _Reciprocal(torch.nn.Module):
+    def forward(self, x):
+        return x.reciprocal()
+
+
+class _PisaOutputs(torch.nn.Module):
+    """What tangermeme's pisa attributes for each target, at outputs idx: the
+    profile head's output, or the track c * y / (sum(y) + 1e-3) written with
+    BilinearOp products and a reciprocal registered with the rescale rule."""
+
+    def __init__(self, model, idx, target):
+        super().__init__()
+        self.model, self.idx, self.target = model, idx, target
+        self.reciprocal = _Reciprocal()
+        self.scale = BilinearOp("...,...->...")
+        self.product = BilinearOp("...,...->...")
+
+    def forward(self, X):
+        y, c = self.model(X)
+        if self.target == "track":
+            w = self.scale(c, self.reciprocal(y.sum(-1, keepdim=True) + 1e-3))
+            y = self.product(y, w.expand_as(y))
+        return y[:, self.idx]
+
+
+@pytest.mark.skipif(BilinearOp is None, reason="needs tangermeme >= 1.5")
+@pytest.mark.parametrize("target", ["track", "profile"])
+@pytest.mark.parametrize("hypothetical", [True, False])
+def test_pisa_matches_tangermeme(target, hypothetical):
+    from tangermeme.pisa import pisa as tm_pisa
+
+    from personal_bpnet.clipnet_tf_fast import pisa
+
+    model, X = _model(), _X(2)
+    idx = torch.arange(480, 520)  # across the strands' boundary
+    expected = tm_pisa(
+        _PisaOutputs(model, idx, target), X, n_shuffles=2, random_state=3,
+        batch_size=40, hypothetical=hypothetical, device="cpu", warning_threshold=1e9,
+        additional_nonlinear_ops={_Reciprocal: _nonlinear},
+    )
+    got, deltas = pisa(model, X, target=target, outputs=idx, n_shuffles=2,
+                       random_state=3, hypothetical=hypothetical, return_deltas=True,
+                       device="cpu", batch_size=16)  # does not divide 40 evenly
+    assert got.shape == (2, 40, 4, 1000)
+    assert _rel(got, expected) < 1e-10
+    assert deltas.shape == (2, 2, 40)
+    assert float(deltas.max()) < 1e-10
+
+
+def test_pisa_channels_select_the_strands():
+    from personal_bpnet.clipnet_tf_fast import pisa
+
+    model, X = _model(), _X(1)
+    kwargs = dict(n_shuffles=1, random_state=0, hypothetical=True, device="cpu")
+    both = pisa(model, X, **kwargs)
+    assert both.shape == (1, 1000, 4, 1000)
+    for channel in (0, 1):
+        got = pisa(model, X, channel=channel, **kwargs)
+        assert torch.allclose(got, both[:, 500 * channel : 500 * (channel + 1)],
+                              rtol=0, atol=1e-12)
+
+
+def test_pisa_given_references_and_fusion_modes():
+    import personal_bpnet.clipnet_tf_fast as fast
+
+    model, X = _model(), _X(1)
+    refs = random_one_hot((2, 4, 1000), random_state=0).double()[None]
+    kwargs = dict(outputs=range(0, 1000, 50), references=refs, hypothetical=True,
+                  device="cpu")
+    got = fast.pisa(model, X, compile=True, **kwargs)
+    script = fast.pisa(model, X, compile=False, **kwargs)
+    eager = fast._fused
+    try:
+        fast._fused = lambda fn, *args, **kw: fn
+        expected = fast.pisa(model, X, **kwargs)
+    finally:
+        fast._fused = eager
+    assert _rel(got, expected) < 1e-12 and _rel(script, expected) < 1e-12
+
+
+def test_pisa_rejects_bad_inputs():
+    from personal_bpnet.clipnet_tf_fast import pisa
+
+    with pytest.raises(ValueError):
+        pisa(_model(counts_head_only=True), _X(1), device="cpu")
+    with pytest.raises(ValueError):
+        pisa(_model(), _X(1), channel=2, device="cpu")
+    with pytest.raises(ValueError):
+        pisa(_model(), _X(1), target="counts", device="cpu")
+    with pytest.raises(ValueError):
+        pisa(_model(), _X(1), outputs=[1000], device="cpu")

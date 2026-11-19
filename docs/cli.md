@@ -47,6 +47,7 @@ Same shape as `clipnet`, but for [PauseNet](pausenet.md)'s single-scalar-per-loc
 clipnet_tf predict -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf ism -f genome.fa -b regions.bed -o out.npz -m model_dir/
+clipnet_tf pisa -f genome.fa -b regions.bed -o out.npz -m model_dir/ --strand plus
 ```
 
 For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are expected to contain `fold_1.h5`..`fold_9.h5`. Input/output windows are fixed at 1000/500 bp (the original architecture's shape), so there are no `--in_window`/`--n_filters`/etc. flags. Pass `--counts_head_only` for counts-only ("PauseNet"-style) TF models.
@@ -62,5 +63,11 @@ For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are 
 - `--raw_outputs` saves the predictions instead: `y0` (reference) and `y_hat` (`(n, 4, end - start, n_outputs)`, every substitution), or `y0_profile`/`y0_counts`/`y_hat_profile`/`y_hat_counts` for `-a both`. Profile predictions for a full window take ~16 MB per region.
 - `--start`/`--end` restrict the substituted positions within the 1000 bp window (default: all of them).
 - `-bs/--batch_size` is the number of edited sequences per step (default 1024), and `-s/--save_ohe` saves the one-hot sequences.
+
+`clipnet_tf pisa` runs PISA with the fast engine ([details](clipnet-tf.md#fast-deepliftshap-and-ism)): DeepLIFT/SHAP of every profile output position, averaged across the ensemble. It saves an array of shape `(n, n_out, 4, 1000)`, one set of attributions per output position.
+
+- `--strand plus|minus|both` (default `both`) selects the outputs, so `n_out` is 500 or 1000. The output takes ~8 MB per region and strand and is held in memory, so split large BED files.
+- `--target track` (default) attributes the predicted track `counts * profile / (sum(profile) + 1e-3)`, what `predict` reports. `--target profile` attributes the profile head's raw output.
+- `-n`, `-r`, `-y` and `-s` work as for `attribute`. `-bs` is the number of output positions per backward step (default: ~2048 rows of output positions × references, if they fit in half the free memory).
 
 Every `clipnet_tf` subcommand runs in full float32 by default, with TF32 off. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs (RTX 30xx/40xx, A100, H100, ...). TF32's rounding noise is about the size of a single substitution's effect: in our tests (random weights, RTX 3080) it gave float32 ISM 30–50% error against float64, made the result depend on `-bs`, and added ~1% error to tangermeme's DeepLIFT/SHAP. With TF32 off, ISM predictions are bit-identical to tangermeme's, and turning it off cost no measurable speed on the RTX 3080. Pass `--tf32` to allow it anyway, e.g. on server GPUs where TF32 throughput is much higher than float32.

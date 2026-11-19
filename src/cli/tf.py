@@ -20,6 +20,7 @@ from tangermeme.predict import predict
 
 from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
 from personal_bpnet.clipnet_tf_fast import deep_lift_shap as fast_deep_lift_shap
+from personal_bpnet.clipnet_tf_fast import pisa as fast_pisa
 from personal_bpnet.clipnet_tf_fast import saturation_mutagenesis
 
 from ._common import (
@@ -37,6 +38,8 @@ The following commands are available:
     predict_tss     Calculate TSS predictions (uses aggressive jittering).
     attribute       Calculate DeepLIFT/SHAP attributions for a CLIPNET model
     ism             Calculate in silico saturation mutagenesis for a CLIPNET model
+    pisa            Calculate PISA attributions (DeepLIFT/SHAP of every profile
+                    output position) for a CLIPNET model
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
 """
@@ -210,6 +213,72 @@ def cli():
         type=str,
         default=None,
         help="Where to save the one-hot encoded sequences. Defaults to not saving.",
+    )
+
+    # PISA PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    pisa_parent = _parent_parser()
+    for action in pisa_parent._actions:
+        if action.dest == "batch_size":
+            action.default = None
+            action.help = (
+                "Profile output positions per backward step, each over all -n "
+                "references. Defaults to ~2048 rows (output positions x "
+                "references), if it fits in half the free memory."
+            )
+    parser_pisa = subparsers.add_parser(
+        "pisa",
+        help="Calculate PISA attributions (DeepLIFT/SHAP of every profile output "
+        "position) for a given set of regions.",
+        parents=[pisa_parent],
+    )
+    parser_pisa.add_argument(
+        "--strand",
+        type=str,
+        default="both",
+        choices=("plus", "minus", "both"),
+        help="Which strand's profile outputs to attribute. Defaults to both. The "
+        "output has shape (n, 500 or 1000, 4, 1000): ~8 MB per region and strand "
+        "in float32, held in memory, so split large BED files.",
+    )
+    parser_pisa.add_argument(
+        "--target",
+        type=str,
+        default="track",
+        choices=("track", "profile"),
+        help="What to attribute at each output position. 'track' (default): the "
+        "predicted track that `predict` reports, counts * profile / (sum(profile) "
+        "+ 1e-3), i.e. the profile normalized and scaled by the predicted counts. "
+        "'profile': the profile head's raw output, whose scale the predictions "
+        "normalize away.",
+    )
+    parser_pisa.add_argument(
+        "-s",
+        "--save_ohe",
+        type=str,
+        default=None,
+        help="Where to save the one-hot encoded sequences. Defaults to not saving.",
+    )
+    parser_pisa.add_argument(
+        "-y",
+        "--hypothetical",
+        action="store_true",
+        help="Save the hypothetical attributions of every base instead of only "
+        "the observed base's.",
+    )
+    parser_pisa.add_argument(
+        "-n",
+        "--n_shuffles",
+        type=int,
+        default=20,
+        help="Number of dinucleotide shuffles per region. Defaults to 20.",
+    )
+    parser_pisa.add_argument(
+        "-r",
+        "--random_state",
+        type=int,
+        default=47,
+        help="Random seed. Defaults to 47.",
     )
 
     args = parser.parse_args()
@@ -497,6 +566,41 @@ def cli():
             )
         else:
             np.savez_compressed(args.out_fname, y0=mean[0], y_hat=mean[1])
+
+    elif args.cmd == "pisa":
+        if args.counts_head_only:
+            raise ValueError("Counts head only models have no profile for PISA.")
+        X = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            chroms=args.chroms,
+            in_window=1000,
+            verbose=args.verbose,
+            ignore=list("QWERYUIOPSDFHJKLZXVBNM"),
+        ).to(torch.float)
+        if args.save_ohe is not None:
+            np.savez_compressed(args.save_ohe, X.to(int).numpy())
+
+        channel = {"plus": 0, "minus": 1, "both": None}[args.strand]
+        # Average over the ensemble as we go: one strand is ~8 MB per region.
+        total, n_models = None, 0
+        for model in load_ensemble(model_paths, _load_tf_model):
+            attr = fast_pisa(
+                model,
+                X,
+                channel=channel,
+                target=args.target,
+                n_shuffles=args.n_shuffles,
+                random_state=args.random_state,
+                batch_size=args.batch_size,
+                hypothetical=args.hypothetical,
+                device=device,
+                verbose=args.verbose,
+                tf32=args.tf32,
+            )
+            total = attr if total is None else total.add_(attr)
+            n_models += 1
+        np.savez_compressed(args.out_fname, (total / n_models).numpy())
 
     else:
         raise ValueError(_help)
