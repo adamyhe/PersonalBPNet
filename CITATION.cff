@@ -12,7 +12,8 @@ authors:
     email: adamyhe@gmail.com
 repository-code: "https://github.com/adamyhe/PersonalBPNet"
 license: MIT
-version: 0.7.0
+version: 0.8.0
+date-released: "2026-11-22"
 references:
   - type: article
     title: Base-resolution models of transcription-factor binding reveal soft motif syntax

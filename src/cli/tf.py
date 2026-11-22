@@ -12,15 +12,16 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 import torch
-from bpnetlite.bpnet import CountWrapper, ProfileWrapper, _ProfileLogitScaling
 from bpnetlite.performance import pearson_corr, spearman_corr
 from scipy.spatial.distance import jensenshannon
 from sklearn.linear_model import LinearRegression
-from tangermeme.deep_lift_shap import _nonlinear, deep_lift_shap
 from tangermeme.io import extract_loci
 from tangermeme.predict import predict
 
 from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
+from personal_bpnet.clipnet_tf_fast import deep_lift_shap as fast_deep_lift_shap
+from personal_bpnet.clipnet_tf_fast import pisa as fast_pisa
+from personal_bpnet.clipnet_tf_fast import saturation_mutagenesis
 
 from ._common import (
     add_attribute_args,
@@ -36,12 +37,19 @@ The following commands are available:
     predict         Calculate predictions for a CLIPNET model
     predict_tss     Calculate TSS predictions (uses aggressive jittering).
     attribute       Calculate DeepLIFT/SHAP attributions for a CLIPNET model
+    ism             Calculate in silico saturation mutagenesis for a CLIPNET model
+    pisa            Calculate PISA attributions (DeepLIFT/SHAP of every profile
+                    output position) for a CLIPNET model
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
 """
 
 
-def cli():
+def _parent_parser():
+    """The arguments every clipnet_tf subcommand takes. Built fresh per call:
+    subparsers share their parents' argument objects, so `attribute` gets its
+    own copy to change the -bs default on."""
+
     parser_parent = build_parent_parser()
     parser_parent.add_argument(
         "--counts_head_only",
@@ -50,6 +58,19 @@ def cli():
         "used for 'PauseNet' models, which trim the profile head and fine-tune the just"
         "the counts head.",
     )
+    parser_parent.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Allow TF32 convolutions/matmuls on GPUs that support them (Ampere and "
+        "newer). Off by default (full float32): TF32's rounding noise is about the "
+        "size of single-base effects, so it degrades ISM badly and attributions "
+        "slightly. May be faster on server GPUs with high TF32 throughput.",
+    )
+    return parser_parent
+
+
+def cli():
+    parser_parent = _parent_parser()
 
     parser = ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(
@@ -101,12 +122,178 @@ def cli():
 
     # ATTRIBUTE PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    attribute_parent = _parent_parser()
+    # The fast DeepLIFT/SHAP engine picks its own step size (the smallest that
+    # saturates the GPU, within its memory), so -bs defaults to that here.
+    for action in attribute_parent._actions:
+        if action.dest == "batch_size":
+            action.default = None
+            action.help = (
+                "Sequences per step, each with all of its -n references. Defaults "
+                "to the smallest step that saturates the GPU (16 on a 28-SM TITAN "
+                "X, scaled by SM count), if it fits in half the free memory "
+                "(~70 MiB a sequence at 20 shuffles); 8 on the CPU."
+            )
     parser_attribute = subparsers.add_parser(
         "attribute",
         help="Calculate attributions for a given set of regions.",
-        parents=[parser_parent],
+        parents=[attribute_parent],
     )
     add_attribute_args(parser_attribute)
+    # CLIPNET_TF also has the "shape" target: the profile normalized as
+    # `predict` normalizes it, rather than treated as softmax logits.
+    for action in parser_attribute._actions:
+        if action.dest == "attribute_type":
+            action.choices = ("counts", "profile", "shape")
+            action.help = (
+                "What to attribute. 'counts' (default): the counts head. 'profile': "
+                "the profile summary sum(c * softmax(c)), which treats the profile "
+                "outputs as logits (see --profile_rule). 'shape': sum_j w_j p_j, "
+                "with p = profile / (sum(profile) + 1e-3) the profile normalized as "
+                "`predict` normalizes it and w the region's own p: how much each "
+                "base puts signal where the region's prediction puts it."
+            )
+    parser_attribute.add_argument(
+        "--profile_rule",
+        type=str,
+        default="product",
+        choices=("product", "rescale"),
+        help="DeepLIFT rule for the profile summary sum(c * softmax(c)). 'product' "
+        "(default) uses tangermeme's (>= 1.5) softmax and midpoint product rules; "
+        "'rescale' applies the elementwise rescale rule to the whole product, which "
+        "reproduces attributions from personalbpnet <= 0.7.0.",
+    )
+    # ISM PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    ism_parent = _parent_parser()
+    for action in ism_parent._actions:
+        if action.dest == "batch_size":
+            action.default = 1024
+            action.help = (
+                "Edited sequences per step, approximately (the edits at a few "
+                "consecutive positions of up to batch_size / 24 regions). "
+                "Defaults to 1024."
+            )
+    parser_ism = subparsers.add_parser(
+        "ism",
+        help="Calculate in silico saturation mutagenesis for a given set of regions.",
+        parents=[ism_parent],
+    )
+    parser_ism.add_argument(
+        "-a",
+        "--output",
+        type=str,
+        default="counts",
+        choices=("counts", "profile", "both"),
+        help="Which predictions to mutagenize. 'counts' (default) saves "
+        "tangermeme-style ISM attributions, shape (n, 4, end - start): each "
+        "substitution's change in predicted counts, centered across bases. "
+        "'profile' saves the change at every profile position, unreduced, shape "
+        "(n, 4, end - start, 1000), ~16 MB per region for a full window. 'both' "
+        "needs --raw_outputs.",
+    )
+    parser_ism.add_argument(
+        "--start",
+        type=int,
+        default=0,
+        help="First position of the 1000 bp window to substitute. Defaults to 0.",
+    )
+    parser_ism.add_argument(
+        "--end",
+        type=int,
+        default=-1,
+        help="Position after the last to substitute (-1: the end of the window). "
+        "Defaults to -1.",
+    )
+    parser_ism.add_argument(
+        "--raw_outputs",
+        action="store_true",
+        help="Save the predictions for the reference (y0) and for every "
+        "substitution (y_hat, shape (n, 4, end - start, n_outputs)) instead of "
+        "attributions. Profile predictions take ~16 MB per region for a full "
+        "window.",
+    )
+    parser_ism.add_argument(
+        "-y",
+        "--hypothetical",
+        action="store_true",
+        help="Save the attribution of every base at every position instead of "
+        "only the observed base's.",
+    )
+    parser_ism.add_argument(
+        "-s",
+        "--save_ohe",
+        type=str,
+        default=None,
+        help="Where to save the one-hot encoded sequences. Defaults to not saving.",
+    )
+
+    # PISA PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    pisa_parent = _parent_parser()
+    for action in pisa_parent._actions:
+        if action.dest == "batch_size":
+            action.default = None
+            action.help = (
+                "Profile output positions per backward step, each over all -n "
+                "references. Defaults to ~2048 rows (output positions x "
+                "references), if it fits in half the free memory."
+            )
+    parser_pisa = subparsers.add_parser(
+        "pisa",
+        help="Calculate PISA attributions (DeepLIFT/SHAP of every profile output "
+        "position) for a given set of regions.",
+        parents=[pisa_parent],
+    )
+    parser_pisa.add_argument(
+        "--strand",
+        type=str,
+        default="both",
+        choices=("plus", "minus", "both"),
+        help="Which strand's profile outputs to attribute. Defaults to both. The "
+        "output has shape (n, 500 or 1000, 4, 1000): ~8 MB per region and strand "
+        "in float32, held in memory, so split large BED files.",
+    )
+    parser_pisa.add_argument(
+        "--target",
+        type=str,
+        default="track",
+        choices=("track", "profile"),
+        help="What to attribute at each output position. 'track' (default): the "
+        "predicted track that `predict` reports, counts * profile / (sum(profile) "
+        "+ 1e-3), i.e. the profile normalized and scaled by the predicted counts. "
+        "'profile': the profile head's raw output, whose scale the predictions "
+        "normalize away.",
+    )
+    parser_pisa.add_argument(
+        "-s",
+        "--save_ohe",
+        type=str,
+        default=None,
+        help="Where to save the one-hot encoded sequences. Defaults to not saving.",
+    )
+    parser_pisa.add_argument(
+        "-y",
+        "--hypothetical",
+        action="store_true",
+        help="Save the hypothetical attributions of every base instead of only "
+        "the observed base's.",
+    )
+    parser_pisa.add_argument(
+        "-n",
+        "--n_shuffles",
+        type=int,
+        default=20,
+        help="Number of dinucleotide shuffles per region. Defaults to 20.",
+    )
+    parser_pisa.add_argument(
+        "-r",
+        "--random_state",
+        type=int,
+        default=47,
+        help="Random seed. Defaults to 47.",
+    )
+
     args = parser.parse_args()
 
     # MAIN CODE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -114,6 +301,10 @@ def cli():
     model_paths = resolve_model_paths(args.model_fname, pattern="fold_{i}.h5")
     set_cpu_threads()
     device = resolve_device()
+    # PyTorch defaults cuDNN convolutions to TF32 on Ampere+; keep full float32
+    # unless asked (the fast engines also take tf32= and restore the setting).
+    torch.backends.cudnn.allow_tf32 = args.tf32
+    torch.backends.cuda.matmul.allow_tf32 = args.tf32
 
     def _load_tf_model(f):
         return TwoHotToOneHot(
@@ -309,33 +500,120 @@ def cli():
 
         attributions = []
         for model in load_ensemble(model_paths, _load_tf_model):
-            additional_nonlinear_ops = None
-            # Wrap models depending on args.attribute_type
-            if args.counts_head_only:
-                pass
-            elif args.attribute_type == "counts":
-                model = CountWrapper(model)
-            elif args.attribute_type == "profile":
-                model = ProfileWrapper(model)
-                additional_nonlinear_ops = {_ProfileLogitScaling: _nonlinear}
-
-            # Calculate and log attributions
+            # The CLIPNET_TF-specific engine: same references and rules as
+            # tangermeme's deep_lift_shap on CountWrapper/ProfileWrapper, with a
+            # hand-written forward/backward (see personal_bpnet.clipnet_tf_fast).
             attributions.append(
-                deep_lift_shap(
+                fast_deep_lift_shap(
                     model,
                     X,
+                    target="counts"
+                    if args.counts_head_only
+                    else args.attribute_type,
                     hypothetical=args.hypothetical,
                     batch_size=args.batch_size,
                     n_shuffles=args.n_shuffles,
                     random_state=args.random_state,
                     verbose=args.verbose,
-                    additional_nonlinear_ops=additional_nonlinear_ops,
                     device=device,
+                    profile_rule=args.profile_rule,
+                    tf32=args.tf32,
                 ).numpy()
             )
 
         # Save
         np.savez_compressed(args.out_fname, np.stack(attributions).mean(axis=0))
+
+    elif args.cmd == "ism":
+        if args.counts_head_only and args.output != "counts":
+            raise ValueError("Counts head only models only support --output counts.")
+        if args.output == "both" and not args.raw_outputs:
+            raise ValueError("--output both needs --raw_outputs.")
+        X = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            chroms=args.chroms,
+            in_window=1000,
+            verbose=args.verbose,
+            ignore=list("QWERYUIOPSDFHJKLZXVBNM"),
+        ).to(torch.float)
+        if args.save_ohe is not None:
+            np.savez_compressed(args.save_ohe, X.to(int).numpy())
+
+        # Ensemble by averaging across replicates as we go (a full-window profile
+        # ISM is ~16 MB per region per replicate). ISM attributions are linear in
+        # the predictions, so averaging them equals the attributions of the
+        # averaged predictions.
+        total, n_models = None, 0
+        for model in load_ensemble(model_paths, _load_tf_model):
+            out = saturation_mutagenesis(
+                model,
+                X,
+                start=args.start,
+                end=args.end,
+                output=args.output,
+                raw_outputs=args.raw_outputs,
+                hypothetical=args.hypothetical,
+                batch_size=args.batch_size,
+                device=device,
+                verbose=args.verbose,
+                tf32=args.tf32,
+            )
+            flat = []
+            for o in out if args.raw_outputs else [out]:
+                flat.extend(o if isinstance(o, list) else [o])
+            total = flat if total is None else [t + f for t, f in zip(total, flat)]
+            n_models += 1
+        mean = [(t / n_models).numpy() for t in total]
+
+        if not args.raw_outputs:
+            np.savez_compressed(args.out_fname, mean[0])
+        elif args.output == "both":
+            y0_profile, y0_counts, y_hat_profile, y_hat_counts = mean
+            np.savez_compressed(
+                args.out_fname,
+                y0_profile=y0_profile,
+                y0_counts=y0_counts,
+                y_hat_profile=y_hat_profile,
+                y_hat_counts=y_hat_counts,
+            )
+        else:
+            np.savez_compressed(args.out_fname, y0=mean[0], y_hat=mean[1])
+
+    elif args.cmd == "pisa":
+        if args.counts_head_only:
+            raise ValueError("Counts head only models have no profile for PISA.")
+        X = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            chroms=args.chroms,
+            in_window=1000,
+            verbose=args.verbose,
+            ignore=list("QWERYUIOPSDFHJKLZXVBNM"),
+        ).to(torch.float)
+        if args.save_ohe is not None:
+            np.savez_compressed(args.save_ohe, X.to(int).numpy())
+
+        channel = {"plus": 0, "minus": 1, "both": None}[args.strand]
+        # Average over the ensemble as we go: one strand is ~8 MB per region.
+        total, n_models = None, 0
+        for model in load_ensemble(model_paths, _load_tf_model):
+            attr = fast_pisa(
+                model,
+                X,
+                channel=channel,
+                target=args.target,
+                n_shuffles=args.n_shuffles,
+                random_state=args.random_state,
+                batch_size=args.batch_size,
+                hypothetical=args.hypothetical,
+                device=device,
+                verbose=args.verbose,
+                tf32=args.tf32,
+            )
+            total = attr if total is None else total.add_(attr)
+            n_models += 1
+        np.savez_compressed(args.out_fname, (total / n_models).numpy())
 
     else:
         raise ValueError(_help)
