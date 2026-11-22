@@ -76,6 +76,24 @@ P = pisa(model, X, channel=0, random_state=47)  # (N, 500, 4, 1000), + strand
 
 [`examples/promoter_interpretation/`](../examples/promoter_interpretation/) compares reference sets for these targets against ISM at 11 lymphoblastoid-expressed promoters. The counts and `shape` targets are robust to the reference choice. PISA's track target is unstable at the strongest promoters.
 
-Both take `tf32=False` (the default), which turns TF32 convolutions and matmuls off for the duration of the call and restores the previous global setting on return. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs. Its rounding noise is about the size of a single base's effect, so it swamps float32 ISM (30–50% error against float64 in our tests, batch-size dependent) and adds error to DeepLIFT/SHAP. Pass `tf32=True` where TF32 is much faster than float32 (e.g. server GPUs) and the noise is acceptable. On an RTX 3080, `deep_lift_shap` takes 1.35 s for 1024 sequences × 20 shuffles with `torch.compile` (1.65 s with TorchScript), against 6.3 s for tangermeme at its fastest batch size, whether TF32 is on or off.
+All three take `tf32=False` (the default), which turns TF32 convolutions and matmuls off for the duration of the call and restores the previous global setting on return. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs.
+
+TF32 rounds to a 10-bit mantissa on every GPU that has it, so its error doesn't depend on the card. With the real CLIPNET ensemble (5 promoters × 3 folds), the float32 error against float64 was:
+
+| | TF32 off | TF32 on, median [max] |
+|---|---|---|
+| `deep_lift_shap`, counts / shape | ~4e-6 | 0.2–0.4% [1.7%] |
+| `pisa`, track | ~5e-6 | 0.4% [1.7%] |
+| `saturation_mutagenesis`, counts | ~2e-5 | 1.4% [2.5%] |
+
+- **DeepLIFT/SHAP and PISA:** two independent draws of 20 dinucleotide shuffles give DeepLIFT/SHAP counts attributions that differ by 40–70%, so TF32's error is small next to the choice of references.
+- **ISM:** it has no such noise, so its 1–2.5% is the real error. That's fine for logos and motifs, but less reliable for single-base effects near zero.
+- **Random weights:** with random weights, whose single-base effects are tiny, TF32 gave ISM 30–50% error and made it depend on the batch size. Models with weak sequence dependence may be closer to that.
+
+**Speed.** On GeForce Ampere cards (e.g. the RTX 3080) TF32 gave no speedup, since their TF32 throughput is about the same as their float32 throughput. Server GPUs (A100, H100) have several times more TF32 than float32 throughput. Convolutions are only ~35–50% of these engines' GPU time here, though; the rest is memory-bound elementwise work that TF32 doesn't speed up. Expect roughly 1.3–1.6x overall (an estimate; not measured on a server GPU).
+
+So `tf32=True` is reasonable for `deep_lift_shap` and `pisa` on server GPUs, and for `saturation_mutagenesis` only if 1–2% error is acceptable.
+
+**Fusion modes.** On an RTX 3080, `torch.compile` was ~20% faster than TorchScript for `deep_lift_shap` (1.35 s vs 1.65 s for 1024 sequences × 20 shuffles) and for `pisa` (0.155 s vs 0.188 s per sequence and strand), so it is their default where Triton runs. It was no faster for `saturation_mutagenesis`, whose fused step is one small kernel, so that one defaults to TorchScript and skips the few seconds torch.compile spends compiling on the first call.
 
 Both default to CUDA when available. `deep_lift_shap` fuses its rules with `torch.compile` on GPUs of compute capability ≥ 7.0 (the first call at each shape compiles for a few seconds to a minute) and with TorchScript elsewhere; pass `compile=True`/`False` to choose. On GPUs older than compute capability 7.0 (e.g. Pascal), use a torch build with kernels for them (e.g. the `cu126` wheels): the default CUDA 13 wheels have none.

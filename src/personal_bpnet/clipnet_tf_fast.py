@@ -1097,7 +1097,7 @@ def saturation_mutagenesis(
     """
 
     m, in_scale = _unwrap(model)
-    with _eval_mode(m), _tf32(tf32):
+    with _eval_mode(m), _tf32(tf32), _recompile_limit("compile"):
         return _saturation_mutagenesis(
             m, in_scale, X, start, end, output, raw_outputs, hypothetical,
             batch_size, device, verbose, compile,
@@ -1360,7 +1360,10 @@ def _pisa_backward(m, terms, head, js, in_scale, length, fused):
             (K * B, conv.in_channels, n_in), conv.weight,
             g.reshape(K * B, *g.shape[2:]), padding=padding, dilation=conv.dilation[0],
         )
-        return out.reshape(K, B, *out.shape[1:])
+        # cuDNN may return a non-contiguous layout, depending on the algorithm
+        # it picks (which dtype and TF32 change); the fused steps would then
+        # recompile for each layout.
+        return out.contiguous().reshape(K, B, *out.shape[1:])
 
     n = G.shape[-1]
     for i in reversed(range(m.n_layers)):
@@ -1507,7 +1510,7 @@ def pisa(
     """
 
     m, in_scale = _unwrap(model)
-    with _eval_mode(m), _tf32(tf32):
+    with _eval_mode(m), _tf32(tf32), _recompile_limit("compile"):
         return _pisa(m, in_scale, X, channel, target, outputs, references, n_shuffles,
                      random_state,
                      batch_size, hypothetical, warning_threshold, return_deltas,
