@@ -10,6 +10,7 @@ A PyTorch library of [BPNet](https://github.com/jmschrei/bpnet-lite)-family mode
 - **CLIPNET** — `PersonalBPNet` plus batch normalization; PyTorch port of the original TensorFlow [CLIPNET](https://github.com/Danko-Lab/clipnet).
 - **ProCapNet** — `BPNet` with a masked profile loss, improving attributions (from the [ProCapNet paper](https://www.biorxiv.org/content/10.1101/2024.05.28.596138v2)).
 - **PauseNet** — transfer-learns a base-resolution model to predict a single scalar phenotype per locus.
+- **CLIPNET_TF** — the original TensorFlow CLIPNET architecture in PyTorch, loading its published weights. It comes with fast DeepLIFT/SHAP, in silico mutagenesis and PISA engines written for it.
 
 ## Install
 
@@ -34,10 +35,11 @@ Installing from source, for local development, is covered in [CONTRIBUTING.md](C
 | | |
 | --- | --- |
 | [docs/clipnet.md](docs/clipnet.md) | `PersonalBPNet` and `CLIPNET`, incl. pretrained weights |
-| [docs/clipnet-tf.md](docs/clipnet-tf.md) | Porting the original TensorFlow CLIPNET weights |
+| [docs/clipnet-tf.md](docs/clipnet-tf.md) | `CLIPNET_TF`: the original TensorFlow CLIPNET weights, and fast DeepLIFT/SHAP, ISM and PISA for them |
 | [docs/procapnet.md](docs/procapnet.md) | `ProCapNet` |
 | [docs/pausenet.md](docs/pausenet.md) | `PauseNet` |
 | [docs/cli.md](docs/cli.md) | `clipnet`, `pausenet`, and `clipnet_tf` command line tools |
+| [examples/promoter_interpretation](examples/promoter_interpretation/) | Comparing attribution references for `CLIPNET_TF` at 11 promoters |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Installing from source and local development |
 
 This package is under active development; APIs may change between releases. See [CHANGELOG.md](CHANGELOG.md).

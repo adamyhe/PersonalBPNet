@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PersonalBPNet"
-version = "0.7.0"
+version = "0.8.0"
 description = "PyTorch BPNet-family models (CLIPNET, ProCapNet, PauseNet) for base-resolution genomic signal prediction, extending bpnetlite."
 readme = "README.md"
 authors = [{ name = "Adam He", email = "adamyhe@gmail.com" }]

@@ -16,6 +16,8 @@ for i in range(1, 10):
 models = [CLIPNET_TF.from_tf(f"clipnet_models/fold_{i}.h5") for i in range(1, 10)]
 ```
 
+The same nine folds are also on Hugging Face, at `https://huggingface.co/adamyhe/clipnet/resolve/main/fold_{i}.h5`.
+
 These models expect inputs of shape `(N, 4, 1000)`. **IMPORTANT:** models loaded this way still expect inputs to be two-hot encoded (see the description in the [TensorFlow CLIPNET README](https://github.com/Danko-Lab/clipnet/blob/main/README.md)). For compatibility with packages that only allow one-hot encoded sequences, use the `TwoHotToOneHot` wrapper:
 
 ```python
@@ -32,7 +34,7 @@ This works for all models trained using the `rnn_v10` architecture in the [origi
 
 For a full worked example, see the [Google Colab notebook](https://github.com/Danko-Lab/clipnet/blob/main/clipnet_basic_tutorial.ipynb) from the original TensorFlow CLIPNET repo.
 
-## Fast DeepLIFT/SHAP and ISM
+## Fast DeepLIFT/SHAP, ISM and PISA
 
 `personal_bpnet.clipnet_tf_fast` has three functions written for the CLIPNET_TF architecture, after the engines in [Cherimoya](https://github.com/jmschrei/cherimoya) and [promoterai-torch](https://github.com/genomicsxai/promoterai-torch). They take a `CLIPNET_TF` or `TwoHotToOneHot(CLIPNET_TF)` model (run in eval mode, not modified):
 
