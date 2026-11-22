@@ -107,6 +107,7 @@ Final model: `{name}.final.torch` — full serialized module
 ### File status notes
 
 - `src/personal_bpnet/procapnet_orig.py`: Original ProCapNet implementation (reference).
+- `examples/promoter_interpretation/`: standalone analysis scripts, not part of the package (setuptools only packages `src/`). They compare DeepLIFT/SHAP and PISA reference sets for `CLIPNET_TF` against ISM at 11 LCL promoters. They need external inputs (HF weights, hg38, ENCODE B-cell PRO-cap); see its README.
 
 ### Version
 
