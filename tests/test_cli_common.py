@@ -1,8 +1,9 @@
 import os
 
+import pytest
 import torch
 
-from cli._common import average_profile_and_counts, resolve_model_paths
+from cli._common import add_attribute_args, average_profile_and_counts, resolve_model_paths
 
 
 class TestResolveModelPaths:
@@ -115,3 +116,34 @@ def test_clipnet_tf_batch_size_defaults(monkeypatch):
     except SystemExit:
         pass
     assert seen["tf32"] is True
+
+
+def test_clipnet_tf_attribute_accepts_shape(monkeypatch):
+    """`clipnet_tf attribute -a` takes the CLIPNET_TF-only "shape" target, and
+    the shared -a choices of the other CLIs are unchanged."""
+
+    import argparse
+    import sys
+
+    import cli.tf as tf
+
+    seen = {}
+    parse_args = argparse.ArgumentParser.parse_args
+
+    def spy(self, *args, **kwargs):
+        seen["ns"] = parse_args(self, *args, **kwargs)
+        raise SystemExit
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    required = ["-f", "a.fa", "-b", "a.bed", "-o", "o.npz", "-m", "m.h5"]
+    monkeypatch.setattr(sys, "argv", ["clipnet_tf", "attribute", "-a", "shape", *required])
+    try:
+        tf.cli()
+    except SystemExit:
+        pass
+    assert seen["ns"].attribute_type == "shape"
+
+    parser = argparse.ArgumentParser()
+    add_attribute_args(parser)
+    with pytest.raises(SystemExit):
+        parse_args(parser, ["-a", "shape"])

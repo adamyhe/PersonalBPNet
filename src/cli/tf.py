@@ -140,6 +140,19 @@ def cli():
         parents=[attribute_parent],
     )
     add_attribute_args(parser_attribute)
+    # CLIPNET_TF also has the "shape" target: the profile normalized as
+    # `predict` normalizes it, rather than treated as softmax logits.
+    for action in parser_attribute._actions:
+        if action.dest == "attribute_type":
+            action.choices = ("counts", "profile", "shape")
+            action.help = (
+                "What to attribute. 'counts' (default): the counts head. 'profile': "
+                "the profile summary sum(c * softmax(c)), which treats the profile "
+                "outputs as logits (see --profile_rule). 'shape': sum_j w_j p_j, "
+                "with p = profile / (sum(profile) + 1e-3) the profile normalized as "
+                "`predict` normalizes it and w the region's own p: how much each "
+                "base puts signal where the region's prediction puts it."
+            )
     parser_attribute.add_argument(
         "--profile_rule",
         type=str,

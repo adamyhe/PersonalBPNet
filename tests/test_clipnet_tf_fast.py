@@ -376,3 +376,42 @@ def test_pisa_rejects_bad_inputs():
         pisa(_model(), _X(1), target="counts", device="cpu")
     with pytest.raises(ValueError):
         pisa(_model(), _X(1), outputs=[1000], device="cpu")
+
+
+class _ShapeWrapper(torch.nn.Module):
+    """sum_j w_j p_j, p = y / (sum(y) + 1e-3), w fixed: the "shape" target,
+    written with a linear step, a reciprocal (rescale rule) and a BilinearOp."""
+
+    def __init__(self, model, w):
+        super().__init__()
+        self.model, self.w = model, w
+        self.reciprocal = _Reciprocal()
+        self.product = BilinearOp("...,...->...")
+
+    def forward(self, X):
+        y = self.model(X)[0]
+        u = (y * self.w).sum(-1, keepdim=True)
+        return self.product(u, self.reciprocal(y.sum(-1, keepdim=True) + 1e-3))
+
+
+@pytest.mark.skipif(BilinearOp is None, reason="needs tangermeme >= 1.5")
+@pytest.mark.parametrize("hypothetical", [True, False])
+def test_deep_lift_shap_shape_matches_tangermeme(hypothetical):
+    model, X = _model(), _X(2)
+    refs = torch.stack([random_one_hot((3, 4, 1000), random_state=i) for i in range(2)]).double()
+    model.eval()
+    with torch.no_grad():  # the weights are each sequence's own p
+        y = model(X)[0]
+    W = y / (y.sum(-1, keepdim=True) + 1e-3)
+    expected = []
+    for i in range(len(X)):
+        expected.append(tm_deep_lift_shap(
+            _ShapeWrapper(model, W[i : i + 1]), X[i : i + 1], references=refs[i : i + 1],
+            hypothetical=hypothetical, device="cpu", warning_threshold=1e9,
+            additional_nonlinear_ops={_Reciprocal: _nonlinear},
+        ))
+    got, deltas = deep_lift_shap(model, X, target="shape", references=refs,
+                                 hypothetical=hypothetical, return_deltas=True,
+                                 device="cpu")
+    assert _rel(got, torch.cat(expected)) < 1e-10
+    assert float(deltas.max()) < 1e-10

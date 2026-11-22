@@ -89,6 +89,7 @@ import torch.nn.functional as F
 from .clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
 
 _RESCALE_EPS = 1e-6  # tangermeme's threshold for falling back to the gradient
+_TRACK_EPS = 1e-3  # as `clipnet_tf predict`'s count * profile / (sum + 1e-3)
 
 
 # ---------------------------------------------------------------- model access
@@ -455,6 +456,40 @@ def _profile_target(m, s, S, K, rule="product"):
     return y, g.reshape(S, K, Lo, C).transpose(-1, -2)
 
 
+def _shape_target(m, s, S, K):
+    """As `_counts_target`, for the profile's shape: T = sum_j w_j p_j, with
+    p = y / (sum(y) + 1e-3) the normalized profile (y the profile output, both
+    strands, after its ReLU), as `clipnet_tf predict` normalizes it, and the
+    weights w fixed to each sequence's own p. T measures how much signal falls
+    where the sequence's prediction puts it; unlike `_profile_target`, it does
+    not treat the (ReLU, sum-normalized) profile outputs as softmax logits.
+
+    Written as T = u v, u = w . y (linear), v = 1 / (sum(y) + 1e-3): the
+    midpoint product rule at the product and the rescale rule at the
+    reciprocal, so the multiplier at y_k is w_k v~ + u~ v' (~: the midpoint of
+    the sequence and the reference, v': the reciprocal's secant)."""
+
+    zp = s["zp"]
+    y = F.relu(zp)
+    tot = y.sum(-1) + _TRACK_EPS
+    v = tot.reciprocal()
+    yx, yr = _split(y, S, K)  # (S, 1, n), (S, K, n)
+    vx, vr = _split(v, S, K)  # (S, 1), (S, K)
+    tx, tr = _split(tot, S, K)
+    w = yx * vx[..., None]  # each sequence's normalized profile, (S, 1, n)
+    ux, ur = (w * yx).sum(-1), (w * yr).sum(-1)
+    out = torch.cat([(ux * vx)[:, 0], (ur * vr).reshape(-1)])
+    d = tx - tr
+    small = d.abs() < _RESCALE_EPS
+    slope_v = torch.where(small, -(vx**2).expand_as(d), (vx - vr) / torch.where(small, 1.0, d))
+    g = w * (0.5 * (vx + vr))[..., None] + (0.5 * (ux + ur) * slope_v)[..., None]
+    zx, zr = _split(zp, S, K)
+    g = _relu_rescale(g, zx, zr, _bn_scale(m.pbnorm))
+    g = g @ m.plinear.weight
+    Lo, C = s["q"].shape[-1], s["q"].shape[1]
+    return out, g.reshape(S, K, Lo, C).transpose(-1, -2)
+
+
 # -------------------------------------------------------------- the backward
 
 
@@ -552,6 +587,8 @@ def _attribute_step(m, target, X, R, in_scale, profile_rule="product", mode="scr
     s = _forward(m, rows)
     if target == "counts":
         y, G = _counts_target(m, s, S, K)
+    elif target == "shape":
+        y, G = _shape_target(m, s, S, K)
     else:
         y, G = _profile_target(m, s, S, K, profile_rule)
     M = _backward(m, s, G, S, K, in_scale, L, mode).reshape(S, K, 4, L)
@@ -597,8 +634,14 @@ def deep_lift_shap(
     X: torch.Tensor, shape=(N, 4, L)
         The sequences to attribute, in the encoding `model` takes (one-hot for
         a TwoHotToOneHot-wrapped model).
-    target: "counts" or "profile"
-        Which head to attribute. Default "counts".
+    target: "counts", "profile" or "shape"
+        What to attribute. "counts" (default): the counts head. "profile": the
+        profile summary sum(c * softmax(c)) of bpnet-lite's ProfileWrapper (see
+        `profile_rule`), which treats the profile outputs as logits. "shape":
+        sum_j w_j p_j, with p = y / (sum(y) + 1e-3) the profile normalized as
+        `clipnet_tf predict` normalizes it and w the sequence's own p (fixed):
+        how much signal the input puts where the sequence's prediction puts
+        it (see `_shape_target`).
     references: torch.Tensor, shape=(N, K, 4, L), optional
         The references. If None, `n_shuffles` dinucleotide shuffles of each
         sequence, reference k drawn with seed `random_state + k` as tangermeme
@@ -669,11 +712,11 @@ def _deep_lift_shap(m, in_scale, X, target, references, n_shuffles, random_state
                     device, verbose, profile_rule, compile):
     from tqdm import tqdm
 
-    if target not in ("counts", "profile"):
-        raise ValueError("target must be 'counts' or 'profile'")
+    if target not in ("counts", "profile", "shape"):
+        raise ValueError("target must be 'counts', 'profile' or 'shape'")
     if profile_rule not in ("product", "rescale"):
         raise ValueError("profile_rule must be 'product' or 'rescale'")
-    if target == "profile" and m.counts_head_only:
+    if target in ("profile", "shape") and m.counts_head_only:
         raise ValueError("a counts-head-only model has no profile to attribute")
     if X.ndim != 3 or X.shape[1] != 4:
         raise ValueError(f"X must have shape (N, 4, L), got {tuple(X.shape)}")
@@ -1195,9 +1238,6 @@ def _pisa_residual(G, Gconv, skip, c):
 
     G = (G + Gconv) * skip
     return G, G * c
-
-
-_TRACK_EPS = 1e-3  # as `clipnet_tf predict`'s count * profile / (sum + 1e-3)
 
 
 def _midpoint(t):
