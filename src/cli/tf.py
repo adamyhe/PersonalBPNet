@@ -20,6 +20,9 @@ from tangermeme.predict import predict
 
 from personal_bpnet.clipnet_tensorflow import CLIPNET_TF, TwoHotToOneHot
 from personal_bpnet.clipnet_tf_fast import deep_lift_shap as fast_deep_lift_shap
+from personal_bpnet.clipnet_tf_fast import dfim as fast_dfim
+from personal_bpnet.clipnet_tf_fast import dfim_extrema
+from personal_bpnet.clipnet_tf_fast import dfim_shuffle as fast_dfim_shuffle
 from personal_bpnet.clipnet_tf_fast import pisa as fast_pisa
 from personal_bpnet.clipnet_tf_fast import saturation_mutagenesis
 
@@ -40,6 +43,8 @@ The following commands are available:
     ism             Calculate in silico saturation mutagenesis for a CLIPNET model
     pisa            Calculate PISA attributions (DeepLIFT/SHAP of every profile
                     output position) for a CLIPNET model
+    dfim            Calculate single-nucleotide Deep Feature Interaction Maps
+    dfim_shuffle    Calculate window-shuffle Deep Feature Interaction Maps
 Planned but not implemented commands:
     vep             Calculate variant effect prediction using a CLIPNET model
 """
@@ -292,6 +297,84 @@ def cli():
         type=int,
         default=47,
         help="Random seed. Defaults to 47.",
+    )
+
+    # DFIM PARAMS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    def dfim_parent():
+        p = _parent_parser()
+        for action in p._actions:
+            if action.dest == "batch_size":
+                action.default = None
+                action.help = (
+                    "Variants per step, each against all -n references. Defaults to "
+                    "as many as `attribute` takes regions per step."
+                )
+        p.add_argument(
+            "-a",
+            "--attribute_type",
+            type=str,
+            default="counts",
+            choices=("counts", "profile", "shape"),
+            help="Which attributions to compare between each variant and the region: "
+            "as for `attribute -a`. Defaults to counts.",
+        )
+        p.add_argument("--profile_rule", type=str, default="product",
+                       choices=("product", "rescale"), help="As for `attribute`.")
+        p.add_argument("-n", "--n_shuffles", type=int, default=20,
+                       help="Dinucleotide-shuffled references per region, shared by "
+                       "all its variants. Defaults to 20.")
+        p.add_argument("-r", "--random_state", type=int, default=47,
+                       help="Random seed. Defaults to 47.")
+        p.add_argument("-s", "--save_ohe", type=str, default=None,
+                       help="Where to save the one-hot encoded sequences.")
+        return p
+
+    parser_dfim = subparsers.add_parser(
+        "dfim",
+        help="Calculate single-nucleotide Deep Feature Interaction Maps: the change "
+        "in every position's attribution when each source position is substituted.",
+        parents=[dfim_parent()],
+    )
+    parser_dfim.add_argument("--start", type=int, default=250,
+                             help="First source position. Defaults to 250 (as CLIPNET).")
+    parser_dfim.add_argument("--end", type=int, default=750,
+                             help="Position after the last source position (-1: the end "
+                             "of the window). Defaults to 750 (as CLIPNET).")
+    parser_dfim.add_argument(
+        "--all_substitutions",
+        action="store_true",
+        help="Save the FIS of every substitution, shape (n, end - start, 4, 1000), "
+        "instead of the most extreme over the three at each source position "
+        "(n, end - start, 1000).",
+    )
+
+    parser_dfim_shuffle = subparsers.add_parser(
+        "dfim_shuffle",
+        help="Calculate window-shuffle Deep Feature Interaction Maps: the change in "
+        "every position's attribution when a source window is shuffled.",
+        parents=[dfim_parent()],
+    )
+    parser_dfim_shuffle.add_argument("--start", type=int, required=True,
+                                     help="First position of the source window.")
+    parser_dfim_shuffle.add_argument("--end", type=int, required=True,
+                                     help="Position after the source window.")
+    parser_dfim_shuffle.add_argument("--n_window_shuffles", type=int, default=5,
+                                     help="Shuffles of the window. Defaults to 5.")
+    parser_dfim_shuffle.add_argument(
+        "--shuffle",
+        type=str,
+        default="sequence",
+        choices=("sequence", "window"),
+        help="'sequence' (default, as CLIPNET): fill the window from a dinucleotide "
+        "shuffle of the whole region. 'window': dinucleotide-shuffle the window "
+        "itself, keeping its composition.",
+    )
+    parser_dfim_shuffle.add_argument(
+        "--all_shuffles",
+        action="store_true",
+        help="Save each shuffle's FIS, shape (n, n_window_shuffles, 1000), instead "
+        "of their mean (n, 1000).",
     )
 
     args = parser.parse_args()
@@ -614,6 +697,50 @@ def cli():
             total = attr if total is None else total.add_(attr)
             n_models += 1
         np.savez_compressed(args.out_fname, (total / n_models).numpy())
+
+    elif args.cmd in ("dfim", "dfim_shuffle"):
+        if args.counts_head_only and args.attribute_type != "counts":
+            raise ValueError("Counts head only models only support -a counts.")
+        X = extract_loci(
+            loci=args.bed_fname,
+            sequences=args.fa_fname,
+            chroms=args.chroms,
+            in_window=1000,
+            verbose=args.verbose,
+            ignore=list("QWERYUIOPSDFHJKLZXVBNM"),
+        ).to(torch.float)
+        if args.save_ohe is not None:
+            np.savez_compressed(args.save_ohe, X.to(int).numpy())
+
+        common = dict(
+            target=args.attribute_type,
+            n_shuffles=args.n_shuffles,
+            random_state=args.random_state,
+            batch_size=args.batch_size,
+            profile_rule=args.profile_rule,
+            device=device,
+            verbose=args.verbose,
+            tf32=args.tf32,
+        )
+        # Average the unreduced maps over the ensemble, then reduce: FIS is linear
+        # in the attributions, the extremum over substitutions is not.
+        total, n_models = None, 0
+        for model in load_ensemble(model_paths, _load_tf_model):
+            if args.cmd == "dfim":
+                fis = fast_dfim(model, X, args.start, args.end, reduce=None, **common)
+            else:
+                fis = fast_dfim_shuffle(
+                    model, X, args.start, args.end, n=args.n_window_shuffles,
+                    shuffle=args.shuffle, reduce=None, **common,
+                )
+            total = fis if total is None else total.add_(fis)
+            n_models += 1
+        fis = total / n_models
+        if args.cmd == "dfim" and not args.all_substitutions:
+            fis = dfim_extrema(fis, X, args.start, args.end)
+        elif args.cmd == "dfim_shuffle" and not args.all_shuffles:
+            fis = fis.mean(1)
+        np.savez_compressed(args.out_fname, fis.numpy())
 
     else:
         raise ValueError(_help)

@@ -147,3 +147,41 @@ def test_clipnet_tf_attribute_accepts_shape(monkeypatch):
     add_attribute_args(parser)
     with pytest.raises(SystemExit):
         parse_args(parser, ["-a", "shape"])
+
+
+def test_clipnet_tf_dfim_parser_defaults(monkeypatch):
+    """`clipnet_tf dfim` defaults to CLIPNET's source range 250..750 and leaves
+    -bs to the engine; `dfim_shuffle` requires its window."""
+
+    import argparse
+    import sys
+
+    import cli.tf as tf
+
+    seen = {}
+    parse_args = argparse.ArgumentParser.parse_args
+
+    def spy(self, *args, **kwargs):
+        seen["ns"] = parse_args(self, *args, **kwargs)
+        raise SystemExit
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    required = ["-f", "a.fa", "-b", "a.bed", "-o", "o.npz", "-m", "m.h5"]
+    monkeypatch.setattr(sys, "argv", ["clipnet_tf", "dfim", *required])
+    with pytest.raises(SystemExit):
+        tf.cli()
+    ns = seen["ns"]
+    assert (ns.start, ns.end, ns.batch_size, ns.attribute_type) == (250, 750, None, "counts")
+    assert not ns.all_substitutions
+
+    monkeypatch.setattr(sys, "argv", ["clipnet_tf", "dfim_shuffle", "--start", "1",
+                                      "--end", "9", "--shuffle", "window", *required])
+    with pytest.raises(SystemExit):
+        tf.cli()
+    ns = seen["ns"]
+    assert (ns.start, ns.end, ns.shuffle, ns.n_window_shuffles) == (1, 9, "window", 5)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", parse_args)
+    monkeypatch.setattr(sys, "argv", ["clipnet_tf", "dfim_shuffle", *required])
+    with pytest.raises(SystemExit):  # --start/--end are required
+        tf.cli()

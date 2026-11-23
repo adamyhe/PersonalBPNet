@@ -350,8 +350,15 @@ def _forward(m, x):
 
 
 def _split(t, S, K):
-    """Rows [x_0..x_{S-1}, r_00..r_{S-1,K-1}] as (S, 1, ...) and (S, K, ...)."""
+    """Rows [x_0..x_{S-1}, r_00..r_{S-1,K-1}] as (S, 1, ...) and (S, K, ...).
 
+    Rows [x_0..x_{S-1}, r_0..r_{K-1}], with one set of K references shared by
+    every sequence (as DFIM's variants of one sequence share it), give the
+    references as a broadcast view, also (S, K, ...): the references are then
+    forwarded once rather than once per sequence."""
+
+    if len(t) == S + K and S > 1:
+        return t[:S].unsqueeze(1), t[S:].unsqueeze(0).expand(S, K, *t.shape[1:])
     return t[:S].unsqueeze(1), t[S:].reshape(S, K, *t.shape[1:])
 
 
@@ -1606,3 +1613,365 @@ def _pisa(m, in_scale, X, channel, target, outputs, references, n_shuffles,
     if not hypothetical:
         attr = attr * X.cpu().to(dtype)[:, None]
     return (attr, deltas) if return_deltas else attr
+
+
+# ======================================================================= DFIM
+#
+# Deep Feature Interaction Maps (Greenside et al. 2018): the interaction of a
+# source feature with every target position is the change in the target's
+# attribution when the source is perturbed, FIS(t) = C_x[t] - C_x'[t], with C
+# the attribution of the observed base (of x, or of the variant x'). Every
+# variant of a sequence is attributed against that sequence's references, as
+# CLIPNET's `epistasis` does, so the references are forwarded once per step
+# rather than once per variant (`_split`'s shared layout); the backward runs
+# over every (variant, reference) pair, as `deep_lift_shap`'s does.
+
+
+def _dfim_step(m, target, V, R, in_scale, profile_rule, mode):
+    """Observed-base attributions (B, L) of variants V (B, 4, L), each against
+    the same references R (K, 4, L), and the deltas (B, K)."""
+
+    B, K, L = len(V), len(R), V.shape[-1]
+    s = _forward(m, torch.cat([V, R]) * in_scale)
+    if target == "counts":
+        y, G = _counts_target(m, s, B, K)
+    elif target == "shape":
+        y, G = _shape_target(m, s, B, K)
+    else:
+        y, G = _profile_target(m, s, B, K, profile_rule)
+    M = _backward(m, s, G, B, K, in_scale, L, mode).reshape(B, K, 4, L)
+    del s, G
+    # the references' outputs: one per reference, or one per (variant,
+    # reference) pair for targets that depend on the variant (the shape
+    # target's weights are each variant's own profile)
+    yx = y[:B]
+    yr = y[B:].reshape(B, K) if len(y) == B + B * K else y[B:][None]
+    delta = ((yx[:, None] - yr) - ((V[:, None] - R[None]) * M).sum((-2, -1))).abs()
+    hyp = M - (R[None] * M).sum(-2, keepdim=True)  # tangermeme's hypothetical
+    return (hyp.mean(1) * V).sum(1), delta
+
+
+def _dfim_batch_size(m, K, L, device, dtype):
+    """Variants per step: as many as `deep_lift_shap` takes sequences (the
+    same number of pairs in the backward), and fewer rows in the forward."""
+
+    return _default_batch_size(m, K, L, device, dtype)
+
+
+def _attribute_variants(m, in_scale, x, variants, R, target, profile_rule, mode,
+                        B, device, dtype):
+    """Observed-base attributions (1 + n, L) of x and its variants (n, 4, L),
+    all against x's references R (K, 4, L), in steps of B variants (the last
+    padded to B, as the fused rules specialize on shape), and the deltas."""
+
+    rows = torch.cat([x[None], variants])
+    n = len(rows)
+    C = torch.empty(n, x.shape[-1], dtype=dtype)
+    D = torch.empty(n, len(R), dtype=dtype)
+    Rd = R.to(device, dtype)
+    for i in range(0, n, B):
+        V = rows[i : i + B]
+        k = len(V)
+        if k < B and n > B:
+            V = torch.cat([V, V[-1:].expand(B - k, -1, -1)])
+        with _recompile_limit(mode):
+            c, d = _dfim_step(m, target, V.to(device, dtype), Rd, in_scale, profile_rule,
+                              mode)
+        C[i : i + k] = c[:k].cpu()
+        D[i : i + k] = d[:k].cpu()
+    return C, D
+
+
+def _dfim_setup(model, X, target, references, n_shuffles, profile_rule, device, compile):
+    m, in_scale = _unwrap(model)
+    if target not in ("counts", "profile", "shape"):
+        raise ValueError("target must be 'counts', 'profile' or 'shape'")
+    if profile_rule not in ("product", "rescale"):
+        raise ValueError("profile_rule must be 'product' or 'rescale'")
+    if target != "counts" and m.counts_head_only:
+        raise ValueError("a counts-head-only model has no profile to attribute")
+    if X.ndim != 3 or X.shape[1] != 4:
+        raise ValueError(f"X must have shape (N, 4, L), got {tuple(X.shape)}")
+    N, _, L = X.shape
+    if references is not None and (
+        references.ndim != 4 or references.shape[0] != N or references.shape[2:] != X.shape[1:]
+    ):
+        raise ValueError(
+            f"references must have shape ({N}, K, 4, {L}), got {tuple(references.shape)}"
+        )
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+    return m, in_scale, device, _resolve_compile(compile, device)
+
+
+def _span(start, end, L):
+    end = L + 1 + end if end < 0 else end
+    if not 0 <= start < end <= L:
+        raise ValueError(f"need 0 <= start < end <= {L}; got start={start}, end={end}")
+    return start, end
+
+
+def _check_deltas(deltas, warning_threshold):
+    if warning_threshold is not None and bool((deltas > warning_threshold).any()):
+        warnings.warn(
+            f"Convergence deltas too high: {int((deltas > warning_threshold).sum())} "
+            f"of {deltas.numel()} > {warning_threshold:g}, the largest "
+            f"{float(deltas.max()):.4g}",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def dfim_extrema(fis, X, start=0, end=-1):
+    """Reduce single-nucleotide DFIMs (N, W, 4, L), as `dfim(reduce=None)`
+    returns them, over the substitutions at each source position to the most
+    extreme FIS, keeping its sign, as CLIPNET does: (N, W, L). X (N, 4, L) and
+    [start, end) are the sequences and source positions they were computed
+    for. To ensemble, average the unreduced maps first, then reduce: the
+    extremum of an average is not the average of the extrema."""
+
+    X = X.to(torch.int8).cpu()
+    start, end = _span(start, end, X.shape[-1])
+    src = X[:, :, start:end]
+    subst = ~((src == 1) & (src.sum(1, keepdim=True) == 1))  # (N, 4, W)
+    return _extrema(fis, subst.permute(0, 2, 1)[..., None], dim=2)
+
+
+def _extrema(a, mask, dim):
+    """The most extreme value of `a` along `dim` among the entries where
+    `mask` holds, keeping its sign: CLIPNET's reduction of a DFIM over the
+    substitutions at each source position (the paper's maxFIS takes the
+    maximum)."""
+
+    hi = torch.where(mask, a, -torch.inf).amax(dim)
+    lo = torch.where(mask, a, torch.inf).amin(dim)
+    return torch.where(-lo > hi, lo, hi)
+
+
+@torch.no_grad()
+def dfim(
+    model,
+    X,
+    start=0,
+    end=-1,
+    target="counts",
+    references=None,
+    n_shuffles=20,
+    random_state=None,
+    reduce="extrema",
+    batch_size=None,
+    profile_rule="product",
+    warning_threshold=1e-3,
+    return_deltas=False,
+    device=None,
+    verbose=False,
+    tf32=False,
+    compile=None,
+):
+    """Single-nucleotide Deep Feature Interaction Maps (Greenside et al. 2018)
+    of a CLIPNET_TF model, as CLIPNET's `epistasis` computes them.
+
+    For every source position s in [start, end) of each sequence and every base
+    other than the observed one, the feature interaction score of every target
+    position t is FIS(t | s, b) = C_x[t] - C_x'[t]: the DeepLIFT/SHAP
+    attribution of the observed base at t in the sequence x, minus that in x'
+    (x with base b at s). The attributions are those of `deep_lift_shap` with
+    the same `target`, and every variant of a sequence is attributed against
+    that sequence's references, so FIS reflects the substitution rather than a
+    change of references. They equal `deep_lift_shap(model, x', target,
+    references=<x's references>)`; the references are forwarded once per step
+    instead of once per variant.
+
+    Parameters
+    ----------
+    model: CLIPNET_TF or TwoHotToOneHot
+    X: torch.Tensor, shape=(N, 4, L)
+        One-hot sequences.
+    start, end: int
+        The source positions, [start, end); end=-1 means the end of the
+        sequence. Default: every position (L * 3 variants per sequence).
+    target: "counts", "profile" or "shape"
+        As in `deep_lift_shap`. Default "counts".
+    references: torch.Tensor, shape=(N, K, 4, L), optional
+        Default: `n_shuffles` dinucleotide shuffles of each sequence, drawn as
+        `deep_lift_shap` draws them.
+    n_shuffles, random_state, profile_rule, warning_threshold, device, tf32,
+    compile:
+        As in `deep_lift_shap`.
+    reduce: "extrema" or None
+        "extrema" (default) reduces over the substitutions at each source
+        position to the most extreme FIS, keeping its sign, as CLIPNET does:
+        shape (N, W, L). None keeps every substitution: shape
+        (N, W, 4, L), with zeros for the observed base (not a substitution);
+        `dfim_extrema` reduces it later, e.g. after averaging an ensemble.
+    batch_size: int, optional
+        Variants per step, each against all K references. Default: as many
+        as `deep_lift_shap` takes sequences.
+    return_deltas: bool
+        Also return the convergence deltas: a list of (1 + n_variants, K) per
+        sequence, the sequence first, then its variants in (position, base)
+        order (3W of them, more at positions holding an N). Default False.
+    verbose: bool
+        Show a progress bar over sequences. Default False.
+
+    Returns
+    -------
+    fis: torch.Tensor, on the CPU
+        (N, W, L) with reduce="extrema", (N, W, 4, L) with reduce=None, where
+        W = end - start. fis[n, i, ..., t] is the interaction of target
+        position t with source position start + i.
+    """
+
+    from tqdm import trange
+
+    if reduce not in ("extrema", None):
+        raise ValueError("reduce must be 'extrema' or None")
+    m, in_scale, device, mode = _dfim_setup(model, X, target, references, n_shuffles,
+                                            profile_rule, device, compile)
+    N, A, L = X.shape
+    start, end = _span(start, end, L)
+    W = end - start
+    with _eval_mode(m), _tf32(tf32):
+        if next(m.parameters()).device != device:
+            import copy
+
+            m = copy.deepcopy(m).to(device)
+        dtype = next(m.parameters()).dtype
+        K = n_shuffles if references is None else references.shape[1]
+        B = batch_size or _dfim_batch_size(m, K, L, device, dtype)
+        out = torch.zeros(N, W, A, L, dtype=dtype)
+        deltas = []
+        X = X.to(torch.int8).cpu()
+        # every base at every source position that isn't already there (all
+        # four where the position holds an N), (N, A, W)
+        src = X[:, :, start:end]
+        subst = ~((src == 1) & (src.sum(1, keepdim=True) == 1))
+        for n in trange(N, disable=not verbose):
+            x = X[n].to(dtype)
+            R = (references[n].to(dtype) if references is not None
+                 else _shuffle_references(x[None], K, random_state)[0])
+            bases, pos = torch.where(subst[n])
+            variants = x[None].repeat(len(pos), 1, 1)
+            variants[torch.arange(len(pos)), :, start + pos] = 0
+            variants[torch.arange(len(pos)), bases, start + pos] = 1
+            C, D = _attribute_variants(m, in_scale, x, variants, R, target, profile_rule,
+                                       mode, B, device, dtype)
+            out[n, pos, bases] = C[:1] - C[1:]
+            deltas.append(D)
+    _check_deltas(torch.cat([d.flatten() for d in deltas]), warning_threshold)
+    if reduce == "extrema":
+        out = dfim_extrema(out, X, start, end)
+    return (out, deltas) if return_deltas else out
+
+
+def _window_variants(x, start, end, n, shuffle, random_state):
+    """n copies of x with [start, end) replaced: by the same span of a
+    dinucleotide shuffle of the whole sequence (shuffle="sequence", as
+    CLIPNET's `dfim_shuffle` replaces it, in distribution), or by a
+    dinucleotide shuffle of the window itself (shuffle="window")."""
+
+    from tangermeme.ersatz import dinucleotide_shuffle
+
+    if shuffle == "sequence":
+        src = dinucleotide_shuffle(x[None], n=n, random_state=random_state)[0][..., start:end]
+    elif shuffle == "window":
+        src = dinucleotide_shuffle(x[None, :, start:end], n=n, random_state=random_state)[0]
+    else:
+        raise ValueError("shuffle must be 'sequence' or 'window'")
+    variants = x[None].repeat(n, 1, 1)
+    variants[..., start:end] = src.to(x.dtype)
+    return variants
+
+
+@torch.no_grad()
+def dfim_shuffle(
+    model,
+    X,
+    start,
+    end,
+    n=5,
+    shuffle="sequence",
+    target="counts",
+    references=None,
+    n_shuffles=20,
+    random_state=None,
+    shuffle_random_state=None,
+    reduce="mean",
+    batch_size=None,
+    profile_rule="product",
+    warning_threshold=1e-3,
+    return_deltas=False,
+    device=None,
+    verbose=False,
+    tf32=False,
+    compile=None,
+):
+    """Window-shuffle Deep Feature Interaction Maps of a CLIPNET_TF model, as
+    CLIPNET's `epistasis.dfim_shuffle` computes them: the interaction of
+    every target position with a source window [start, end), as the change in
+    the target's attribution when the window is shuffled, averaged over `n`
+    shuffles: FIS(t) = mean_i (C_x[t] - C_x'_i[t]).
+
+    The attributions are those of `deep_lift_shap` with the same `target`, all
+    against the sequence's references (see `dfim`).
+
+    Parameters
+    ----------
+    start, end: int
+        The source window.
+    n: int
+        Window shuffles. Default 5 (CLIPNET's default).
+    shuffle: "sequence" or "window"
+        "sequence" (default): replace the window with the same span of a
+        dinucleotide shuffle of the whole sequence, as CLIPNET does (which
+        takes a span starting at 1 of the shuffle instead: the same in
+        distribution, not the same draws). This replaces the window's
+        composition with the sequence's, and avoids the few permutations a
+        short window has. "window": a dinucleotide shuffle of the window
+        itself, which keeps its composition.
+    shuffle_random_state: int or None
+        Seed of the window shuffles. Default: `random_state`.
+    reduce: "mean" or None
+        "mean" (default): (N, L). None: every shuffle's FIS, (N, n, L).
+    Other parameters as in `dfim`.
+
+    Returns
+    -------
+    fis: torch.Tensor, (N, L) or (N, n, L), on the CPU
+    deltas: torch.Tensor, (N, 1 + n, K), if `return_deltas`
+    """
+
+    from tqdm import trange
+
+    if reduce not in ("mean", None):
+        raise ValueError("reduce must be 'mean' or None")
+    m, in_scale, device, mode = _dfim_setup(model, X, target, references, n_shuffles,
+                                            profile_rule, device, compile)
+    N, _, L = X.shape
+    start, end = _span(start, end, L)
+    if shuffle_random_state is None:
+        shuffle_random_state = random_state
+    with _eval_mode(m), _tf32(tf32):
+        if next(m.parameters()).device != device:
+            import copy
+
+            m = copy.deepcopy(m).to(device)
+        dtype = next(m.parameters()).dtype
+        K = n_shuffles if references is None else references.shape[1]
+        B = batch_size or _dfim_batch_size(m, K, L, device, dtype)
+        out = torch.empty(N, n, L, dtype=dtype)
+        deltas = torch.empty(N, 1 + n, K, dtype=dtype)
+        for i in trange(N, disable=not verbose):
+            x = X[i].to(torch.int8).to(dtype)
+            R = (references[i].to(dtype) if references is not None
+                 else _shuffle_references(x[None], K, random_state)[0])
+            variants = _window_variants(x, start, end, n, shuffle, shuffle_random_state)
+            C, D = _attribute_variants(m, in_scale, x, variants, R, target, profile_rule,
+                                       mode, B, device, dtype)
+            out[i] = C[:1] - C[1:]
+            deltas[i] = D
+    _check_deltas(deltas, warning_threshold)
+    if reduce == "mean":
+        out = out.mean(1)
+    return (out, deltas) if return_deltas else out

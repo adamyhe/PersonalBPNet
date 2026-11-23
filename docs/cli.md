@@ -1,6 +1,6 @@
 # Command line interface
 
-See [the README](../README.md#install) for installation. Three CLI entry points are installed: `clipnet`, `pausenet`, and `clipnet_tf` (for TensorFlow-ported models — requires the `tf` extra). Each takes a `predict`, `predict_tss`, or `attribute` subcommand (`clipnet_tf` and `clipnet` support all three; `pausenet` supports `predict`/`attribute`, since TSS prediction doesn't apply to scalar phenotypes). `clipnet_tf` also has `ism`.
+See [the README](../README.md#install) for installation. Three CLI entry points are installed: `clipnet`, `pausenet`, and `clipnet_tf` (for TensorFlow-ported models — requires the `tf` extra). Each takes a `predict`, `predict_tss`, or `attribute` subcommand (`clipnet_tf` and `clipnet` support all three; `pausenet` supports `predict`/`attribute`, since TSS prediction doesn't apply to scalar phenotypes). `clipnet_tf` also has `ism`, `pisa`, `dfim` and `dfim_shuffle`.
 
 Every subcommand of every CLI accepts:
 
@@ -48,6 +48,8 @@ clipnet_tf predict -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf attribute -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf ism -f genome.fa -b regions.bed -o out.npz -m model_dir/
 clipnet_tf pisa -f genome.fa -b regions.bed -o out.npz -m model_dir/ --strand plus
+clipnet_tf dfim -f genome.fa -b regions.bed -o out.npz -m model_dir/ --start 400 --end 600
+clipnet_tf dfim_shuffle -f genome.fa -b regions.bed -o out.npz -m model_dir/ --start 465 --end 477
 ```
 
 For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are expected to contain `fold_1.h5`..`fold_9.h5`. Input/output windows are fixed at 1000/500 bp (the original architecture's shape), so there are no `--in_window`/`--n_filters`/etc. flags. Pass `--counts_head_only` for counts-only ("PauseNet"-style) TF models.
@@ -70,5 +72,11 @@ For [TensorFlow-ported CLIPNET models](clipnet-tf.md) — model directories are 
 - `--strand plus|minus|both` (default `both`) selects the outputs, so `n_out` is 500 or 1000. The output takes ~8 MB per region and strand and is held in memory, so split large BED files.
 - `--target track` (default) attributes the predicted track `counts * profile / (sum(profile) + 1e-3)`, what `predict` reports. `--target profile` attributes the profile head's raw output.
 - `-n`, `-r`, `-y` and `-s` work as for `attribute`. `-bs` is the number of output positions per backward step (default: ~2048 rows of output positions × references, if they fit in half the free memory).
+
+`clipnet_tf dfim` and `clipnet_tf dfim_shuffle` compute Deep Feature Interaction Maps ([details](clipnet-tf.md#feature-interaction-maps-dfim)), as the original CLIPNET's `clipnet epistasis` does. The FIS of each target position is its change in attribution when a source feature is perturbed. Every variant is attributed against its region's references. The maps are averaged over the ensemble before they are reduced.
+
+- `dfim`: every single-base substitution at source positions `--start`..`--end` (default 250..750, as CLIPNET). It saves the most extreme FIS over the three substitutions at each source position, `(n, end - start, 1000)`, or `(n, end - start, 4, 1000)` with `--all_substitutions`.
+- `dfim_shuffle`: the window `--start`..`--end` (required) shuffled `--n_window_shuffles` times (default 5). It saves the mean FIS, `(n, 1000)`, or each shuffle's with `--all_shuffles`. `--shuffle sequence` (default, as CLIPNET) fills the window from a dinucleotide shuffle of the whole region; `--shuffle window` shuffles the window itself.
+- `-a counts|profile|shape`, `--profile_rule`, `-n`, `-r` and `-s` work as for `attribute`. `-bs` is the number of variants per step, each against all `-n` references.
 
 Every `clipnet_tf` subcommand runs in full float32 by default, with TF32 off. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs (RTX 30xx/40xx, A100, H100, ...). With the real CLIPNET ensemble, TF32 adds ~0.2–0.4% error (up to ~2%) to `attribute` and `pisa`, which is small next to the variation between reference draws. It adds ~1.4% (up to 2.5%) to `ism`, which has no such noise ([details](clipnet-tf.md#fast-deepliftshap-ism-and-pisa)). It gave no speedup on an RTX 3080. Server GPUs (A100, H100) have much higher TF32 throughput, but convolutions are only part of the work here, so expect roughly 1.3–1.6x (an estimate). Pass `--tf32` there for `attribute` and `pisa`; use it for `ism` only if ~1–2% error is acceptable.

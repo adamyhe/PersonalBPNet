@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `personal_bpnet.clipnet_tf_fast.dfim` and `dfim_shuffle`, with `clipnet_tf dfim` and `clipnet_tf dfim_shuffle`: Deep Feature Interaction Maps (Greenside et al. 2018), as the original CLIPNET's `clipnet epistasis` computes them.
+  - `dfim`: single-nucleotide maps (every substitution at every source position), reduced to the most extreme FIS per source position (`reduce="extrema"`, as CLIPNET) or kept per substitution.
+  - `dfim_shuffle`: window-shuffle maps, filling the window from a dinucleotide shuffle of the whole sequence (as CLIPNET) or shuffling the window itself.
+  - Each variant equals tangermeme's `deep_lift_shap` on it with its sequence's references. Those references are shared, so they go through the forward pass once per step instead of once per variant. On an RTX 3080, 600 variants take 0.37 s, against 4.36 s with tangermeme (~12x).
+  - Any target (`counts`, `profile`, `shape`). The CLI averages the unreduced maps over the ensemble before reducing.
+- `clipnet_tf_fast.dfim_extrema`: CLIPNET's reduction, for maps computed with `reduce=None`, e.g. after averaging an ensemble.
+
 ## [0.8.0] - 2026-11-22
 
 ### Added

@@ -415,3 +415,108 @@ def test_deep_lift_shap_shape_matches_tangermeme(hypothetical):
                                  device="cpu")
     assert _rel(got, torch.cat(expected)) < 1e-10
     assert float(deltas.max()) < 1e-10
+
+
+# ----------------------------------------------------------------------- DFIM
+
+
+def _observed(a, x):
+    return (a * x).sum(-2)
+
+
+@pytest.mark.skipif(BilinearOp is None, reason="needs tangermeme >= 1.5")
+@pytest.mark.parametrize("target", ["counts", "profile", "shape"])
+def test_dfim_matches_tangermeme_per_substitution(target):
+    """Each FIS row is C_x - C_x' for one substitution, with both attributed
+    by tangermeme against the sequence's references."""
+
+    from personal_bpnet.clipnet_tf_fast import dfim
+
+    model, X = _model(), _X(2, seed=4)
+    refs = torch.stack([random_one_hot((3, 4, 1000), random_state=i) for i in range(2)]).double()
+    start, end = 100, 104
+
+    def wrapper(z):
+        if target == "counts":
+            return CountWrapper(model), None
+        if target == "profile":
+            return _ProductProfileWrapper(model), None
+        model.eval()  # tangermeme leaves the model in train mode
+        with torch.no_grad():
+            y = model(z)[0]
+        return _ShapeWrapper(model, y / (y.sum(-1, keepdim=True) + 1e-3)), {_Reciprocal: _nonlinear}
+
+    def attr(z, R):
+        w, ops = wrapper(z)
+        return _observed(tm_deep_lift_shap(w, z, references=R, device="cpu",
+                                           warning_threshold=1e9,
+                                           additional_nonlinear_ops=ops), z)[0]
+
+    got, deltas = dfim(model, X, start, end, target=target, references=refs, reduce=None,
+                       return_deltas=True, device="cpu", batch_size=5)  # 5 doesn't divide 13
+    assert got.shape == (2, end - start, 4, 1000)
+    for n in range(2):
+        x, R = X[n : n + 1], refs[n : n + 1]
+        c0 = attr(x, R)
+        for i, s in enumerate(range(start, end)):
+            for b in range(4):
+                if X[n, b, s] == 1:
+                    assert torch.equal(got[n, i, b], torch.zeros(1000, dtype=got.dtype))
+                    continue
+                xm = x.clone()
+                xm[0, :, s] = 0
+                xm[0, b, s] = 1
+                assert _rel(got[n, i, b], c0 - attr(xm, R)) < 1e-10
+    assert all(d.shape == (1 + 3 * (end - start), 3) for d in deltas)
+    assert max(float(d.max()) for d in deltas) < 1e-10
+
+
+def test_dfim_extrema_and_n_positions():
+    from personal_bpnet.clipnet_tf_fast import dfim
+
+    model, X = _model(counts_head_only=True), _X(2, seed=5)
+    X[1, :, 52] = 0  # an N: all four bases are substitutions
+    # (tangermeme's shuffles refuse an N, so the references are given)
+    refs = torch.stack([random_one_hot((2, 4, 1000), random_state=i) for i in range(2)]).double()
+    kwargs = dict(start=50, end=55, references=refs, device="cpu")
+    full, deltas = dfim(model, X, reduce=None, return_deltas=True, **kwargs)
+    ext = dfim(model, X, **kwargs)
+    assert [len(d) for d in deltas] == [1 + 15, 1 + 16]
+    subst = ~X[:, :, 50:55].bool().permute(0, 2, 1)[..., None]
+    hi = torch.where(subst, full, -torch.inf).amax(2)
+    lo = torch.where(subst, full, torch.inf).amin(2)
+    assert ext.shape == (2, 5, 1000)
+    assert torch.equal(ext, torch.where(-lo > hi, lo, hi))
+
+
+def test_dfim_shuffle_matches_tangermeme():
+    from personal_bpnet.clipnet_tf_fast import _window_variants, dfim_shuffle
+
+    model, X = _model(), _X(2, seed=6)
+    refs = torch.stack([random_one_hot((2, 4, 1000), random_state=i) for i in range(2)]).double()
+    got = dfim_shuffle(model, X, 480, 520, n=3, references=refs, random_state=0, reduce=None,
+                       device="cpu", batch_size=2)
+    mean = dfim_shuffle(model, X, 480, 520, n=3, references=refs, random_state=0, device="cpu")
+    assert got.shape == (2, 3, 1000) and torch.allclose(mean, got.mean(1))
+    for n in range(2):
+        V = _window_variants(X[n], 480, 520, 3, "sequence", 0)
+        assert torch.equal(V[..., :480], X[n, :, :480].expand(3, -1, -1))
+        assert torch.equal(V[..., 520:], X[n, :, 520:].expand(3, -1, -1))
+        c0 = _observed(tm_deep_lift_shap(CountWrapper(model), X[n : n + 1],
+                                         references=refs[n : n + 1], device="cpu",
+                                         warning_threshold=1e9), X[n : n + 1])
+        for i in range(3):
+            c1 = _observed(tm_deep_lift_shap(CountWrapper(model), V[i : i + 1],
+                                             references=refs[n : n + 1], device="cpu",
+                                             warning_threshold=1e9), V[i : i + 1])
+            assert _rel(got[n, i], (c0 - c1)[0]) < 1e-10
+
+
+def test_window_variants_window_mode_keeps_composition():
+    from personal_bpnet.clipnet_tf_fast import _window_variants
+
+    x = _X(1, seed=7)[0]
+    V = _window_variants(x, 300, 340, 4, "window", 1)
+    assert torch.equal(V[..., 300:340].sum(-1), x[:, 300:340].sum(-1).expand(4, -1))
+    with pytest.raises(ValueError):
+        _window_variants(x, 300, 340, 4, "motif", 1)
