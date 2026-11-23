@@ -65,6 +65,17 @@ They were wrong by 797 bp (MYC, an alternative upstream start), 185 bp (CD74),
 5 bp (NFKBIA), 4 bp (RPLP0) and 1 bp (CD79A). The observed TSS and the model's
 predicted peak agree to the base at all 11 promoters.
 
+## DFIM heatmap
+
+`dfim_heatmap.py` draws a single-nucleotide DFIM of one promoter (default: IRF4, −100..+60) with the 9-fold ensemble. The unreduced maps are averaged over the folds before the extremum over substitutions is taken, and every fold uses the same 20 references. The figure shows the sequence's DeepLIFT/SHAP logo along the target axis, and its attribution along the source axis.
+
+```sh
+python dfim_heatmap.py clipnet_models/ hg38.fa irf4_dfim_counts   # -> .npz and .png
+python dfim_heatmap.py clipnet_models/ hg38.fa myc_dfim --name MYC --chrom chr8 --tss 127736231 --motifs ""
+```
+
+At IRF4, substituting TATA bases lowers the attributions of both GC boxes and of the initiator, and substituting GC-box or initiator bases lowers the TATA box's, so the core elements depend on each other. Substitutions at −25..−23 raise the TATA box's attribution instead. The run takes ~13 s on an RTX 3080.
+
 ## Results
 
 Mean Pearson r with ISM over −100..+60, 11 promoters:

@@ -12,7 +12,7 @@ authors:
     email: adamyhe@gmail.com
 repository-code: "https://github.com/adamyhe/PersonalBPNet"
 license: MIT
-version: 0.8.0
+version: 0.9.0
 date-released: "2026-11-22"
 references:
   - type: article

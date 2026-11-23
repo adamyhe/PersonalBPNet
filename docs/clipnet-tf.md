@@ -34,12 +34,23 @@ This works for all models trained using the `rnn_v10` architecture in the [origi
 
 For a full worked example, see the [Google Colab notebook](https://github.com/Danko-Lab/clipnet/blob/main/clipnet_basic_tutorial.ipynb) from the original TensorFlow CLIPNET repo.
 
+`personal_bpnet.clipnet_tf_fast` has interpretation engines written for this architecture:
+
+- [`deep_lift_shap`](#fast-deepliftshap-ism-and-pisa): DeepLIFT/SHAP of the counts, the profile summary, or the profile's shape.
+- [`saturation_mutagenesis`](#fast-deepliftshap-ism-and-pisa): incremental in silico mutagenesis.
+- [`pisa`](#fast-deepliftshap-ism-and-pisa): DeepLIFT/SHAP of every profile output position.
+- [`dfim` and `dfim_shuffle`](#feature-interaction-maps-dfim): feature interaction maps, single-nucleotide and window-shuffle.
+
+The command line exposes the same engines as `clipnet_tf attribute`, `ism`, `pisa`, `dfim` and `dfim_shuffle` ([CLI docs](cli.md#clipnet_tf)).
+
 ## Fast DeepLIFT/SHAP, ISM and PISA
 
-`personal_bpnet.clipnet_tf_fast` has three functions written for the CLIPNET_TF architecture, after the engines in [Cherimoya](https://github.com/jmschrei/cherimoya) and [promoterai-torch](https://github.com/genomicsxai/promoterai-torch). They take a `CLIPNET_TF` or `TwoHotToOneHot(CLIPNET_TF)` model (run in eval mode, not modified):
+`personal_bpnet.clipnet_tf_fast` has functions written for the CLIPNET_TF architecture, after the engines in [Cherimoya](https://github.com/jmschrei/cherimoya) and [promoterai-torch](https://github.com/genomicsxai/promoterai-torch). They take a `CLIPNET_TF` or `TwoHotToOneHot(CLIPNET_TF)` model (run in eval mode, not modified):
 
 ```python
-from personal_bpnet.clipnet_tf_fast import deep_lift_shap, pisa, saturation_mutagenesis
+from personal_bpnet.clipnet_tf_fast import (
+    deep_lift_shap, dfim, dfim_shuffle, pisa, saturation_mutagenesis,
+)
 
 model = TwoHotToOneHot(CLIPNET_TF.from_tf("clipnet_models/fold_1.h5")).cuda()
 
@@ -52,6 +63,8 @@ ism = saturation_mutagenesis(model, X)  # (N, 4, 1000) counts ISM attributions
 prof = saturation_mutagenesis(model, X, output="profile")  # (N, 4, 1000, 1000), per profile position
 y0, y_hat = saturation_mutagenesis(model, X, output="both", raw_outputs=True)
 P = pisa(model, X, channel=0, random_state=47)  # (N, 500, 4, 1000), + strand
+F = dfim(model, X, start=400, end=600, random_state=47)  # (N, 200, 1000) maxFIS
+Fw = dfim_shuffle(model, X, start=465, end=477, n=5, random_state=47)  # (N, 1000)
 ```
 
 - **`deep_lift_shap`** returns what `tangermeme.deep_lift_shap.deep_lift_shap(CountWrapper(model), X, ...)` returns, with the same dinucleotide-shuffled references for a given `random_state`. It doesn't use hooks or autograd. Each sequence is forwarded once instead of once per reference, the backward runs only over the sequence half of each sequence–reference pair, and the DeepLIFT rules are written out and fused (torch.compile on GPUs of compute capability ≥ 7.0, TorchScript elsewhere). For 1024 sequences × 20 shuffles in float32:
@@ -78,7 +91,38 @@ P = pisa(model, X, channel=0, random_state=47)  # (N, 500, 4, 1000), + strand
 
 [`examples/promoter_interpretation/`](../examples/promoter_interpretation/) compares reference sets for these targets against ISM at 11 lymphoblastoid-expressed promoters. The counts and `shape` targets are robust to the reference choice. PISA's track target is unstable at the strongest promoters.
 
-All three take `tf32=False` (the default), which turns TF32 convolutions and matmuls off for the duration of the call and restores the previous global setting on return. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs.
+## Feature interaction maps (DFIM)
+
+`dfim` and `dfim_shuffle` compute Deep Feature Interaction Maps ([Greenside et al. 2018](https://doi.org/10.1093/bioinformatics/bty575)) as the original CLIPNET's `clipnet epistasis` (`clipnet/epistasis.py`) does. The feature interaction score (FIS) of a target position t, given a perturbation of a source feature, is the change in t's attribution: `FIS(t) = C_x[t] - C_x'[t]`. Here C is the DeepLIFT/SHAP attribution of the observed base, in the sequence x and in its perturbed variant x'.
+
+- **`dfim`** (single nucleotide): every base other than the observed one, at every source position in `[start, end)`. `reduce="extrema"` (default) keeps, for each source position, the most extreme FIS over its three substitutions, with its sign, as CLIPNET does: shape `(N, W, L)`. `reduce=None` keeps them all, `(N, W, 4, L)`; `dfim_extrema` reduces those later.
+- **`dfim_shuffle`** (window): the source window `[start, end)` is replaced `n` times, and the mean FIS is returned, `(N, L)`, or each shuffle's with `reduce=None`.
+  - `shuffle="sequence"` (default, as CLIPNET) fills the window from a dinucleotide shuffle of the whole sequence, so the window takes the sequence's composition. CLIPNET takes the span from position 1 of the shuffle, so the draws differ but the distribution is the same.
+  - `shuffle="window"` dinucleotide-shuffles the window itself, keeping its composition. A short window has few distinct shuffles.
+- **Targets:** `target` is `counts`, `profile` or `shape`, as for `deep_lift_shap`.
+  - With `shape`, each variant is attributed with its own profile weights, as `deep_lift_shap` would attribute it. A substitution that creates a new initiation site therefore changes the target itself, and shows up as a full-width row.
+- **References:** every variant is attributed against its sequence's references (default: `n_shuffles` dinucleotide shuffles of the sequence), as CLIPNET's fixed background does. The FIS then reflects the perturbation, not a change of references: two draws of 20 shuffles differ by 40–70% in their attributions.
+- **Ensembles:** FIS is linear in the attributions, so average the unreduced maps over models, then reduce. The extremum of an average is not the average of the extrema. `clipnet_tf dfim` does this.
+
+For example, to map the IRF4 promoter's core interactions with the 9-fold ensemble:
+
+```python
+models = [TwoHotToOneHot(CLIPNET_TF.from_tf(f"clipnet_models/fold_{i}.h5")).cuda() for i in range(1, 10)]
+# average the unreduced maps over the ensemble, then reduce
+fis = sum(dfim(m, X, start=400, end=560, references=refs, reduce=None) for m in models) / len(models)
+fis = dfim_extrema(fis, X, start=400, end=560)  # (N, 160, 1000)
+```
+
+Pass the same `refs`, shape `(N, K, 4, 1000)`, to every model, so that the folds are compared on the same references. [`examples/promoter_interpretation/dfim_heatmap.py`](../examples/promoter_interpretation/dfim_heatmap.py) runs this and plots the map.
+
+Each variant's attributions equal tangermeme's `deep_lift_shap` on that variant with the sequence's references (to ~1e-13 in float64). Because the references are shared, they go through the forward pass once per step instead of once per variant: `[x'_1..x'_B, r_1..r_K]`, B + K rows instead of B(K + 1). The backward still covers every (variant, reference) pair.
+
+On an RTX 3080, with one real fold and 20 references:
+- **600 variants:** 0.37 s, against 4.36 s for tangermeme `deep_lift_shap` on the variants (~12x), and 0.74 s for the fast `deep_lift_shap` without the shared references (2x). It used under 1 GiB.
+- **CLIPNET's default source range of 250..750 (1,500 variants):** ~1 s per region and model.
+- **`dfim_shuffle` with 5 shuffles:** 35 ms.
+
+All of them take `tf32=False` (the default), which turns TF32 convolutions and matmuls off for the duration of the call and restores the previous global setting on return. PyTorch otherwise runs cuDNN convolutions in TF32 on Ampere and newer GPUs.
 
 TF32 rounds to a 10-bit mantissa on every GPU that has it, so its error doesn't depend on the card. With the real CLIPNET ensemble (5 promoters × 3 folds), the float32 error against float64 was:
 
